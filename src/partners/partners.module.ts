@@ -20,6 +20,6 @@ import { PartnersController } from './presentation/partners.controller';
       useClass: MongoPartnerRepository,
     },
   ],
-  exports: [PartnersService],
+  exports: [PartnersService, PARTNER_REPOSITORY],
 })
 export class PartnersModule {}
