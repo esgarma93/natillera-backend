@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PaymentsService } from '../../payments/application/payments.service';
+import { PartnersService } from '../../partners/application/partners.service';
 import { OcrService } from './ocr.service';
 import axios from 'axios';
 
@@ -10,6 +11,7 @@ export class WhatsAppService {
 
   constructor(
     private readonly paymentsService: PaymentsService,
+    private readonly partnersService: PartnersService,
     private readonly ocrService: OcrService,
   ) {}
 
@@ -69,6 +71,7 @@ export class WhatsAppService {
   private async handleImageMessage(message: any, from: string, contact: any): Promise<void> {
     const imageId = message.image?.id;
     const caption = message.image?.caption || '';
+    const messageId = message.id;
 
     this.logger.log(`Processing image message. ID: ${imageId}, Caption: ${caption}`);
 
@@ -77,7 +80,7 @@ export class WhatsAppService {
       const imageUrl = await this.getMediaUrl(imageId);
 
       if (!imageUrl) {
-        await this.sendMessage(from, '❌ Could not process the image. Please try again.');
+        await this.sendMessage(from, '❌ No se pudo procesar la imagen. Por favor intente de nuevo.');
         return;
       }
 
@@ -85,34 +88,109 @@ export class WhatsAppService {
       const ocrResult = await this.ocrService.extractAmountFromImage(imageUrl);
 
       // Try to extract partner info from caption or contact name
-      // Caption format expected: "Partner Name" or "#RaffleNumber"
-      const partnerInfo = this.extractPartnerInfo(caption, contact?.profile?.name);
+      const raffleNumber = this.extractRaffleNumber(caption);
+      const contactName = contact?.profile?.name || caption.trim() || null;
+
+      // Try to find partner by raffle number
+      let partner = null;
+      let partnerIdentifier = contactName || `WhatsApp: ${from}`;
+
+      if (raffleNumber) {
+        partner = await this.partnersService.findByNumeroRifa(raffleNumber);
+        if (partner) {
+          partnerIdentifier = `${partner.nombre} (Rifa #${partner.numeroRifa})`;
+        }
+      }
+
+      // Determine current month for payment
+      const currentMonth = new Date().getMonth() + 1;
+      const currentYear = new Date().getFullYear();
 
       if (ocrResult.amount !== null) {
-        await this.sendMessage(
-          from,
-          `📸 Payment voucher received!\n\n` +
-            `💰 Detected amount: $${ocrResult.amount.toLocaleString()}\n` +
-            `👤 From: ${partnerInfo || 'Unknown'}\n\n` +
-            `Please confirm this information or reply with corrections.`,
-        );
+        // If we found a partner, create a payment record
+        if (partner) {
+          try {
+            await this.paymentsService.createFromWhatsApp(
+              partner.id,
+              ocrResult.amount,
+              imageUrl,
+              messageId,
+            );
+            this.logger.log(`Payment record created for partner: ${partner.nombre}`);
+
+            await this.sendMessage(
+              from,
+              `📸 ¡Comprobante de pago recibido!\n\n` +
+                `👤 Socio: ${partner.nombre}\n` +
+                `🎰 Rifa: #${partner.numeroRifa}\n` +
+                `💰 Monto detectado: $${ocrResult.amount.toLocaleString('es-CO')}\n` +
+                `💵 Cuota esperada: $${partner.montoCuota.toLocaleString('es-CO')}\n` +
+                `📅 Mes: ${this.getMonthName(currentMonth)} ${currentYear}\n\n` +
+                `✅ El pago ha sido registrado y será verificado pronto.\n` +
+                `Si hay algún error, por favor responda con el monto correcto.`,
+            );
+          } catch (paymentError) {
+            this.logger.error('Error creating payment record:', paymentError);
+            await this.sendMessage(
+              from,
+              `📸 ¡Comprobante recibido pero hubo un error al registrar el pago.\n` +
+                `Por favor contacte al administrador.`,
+            );
+          }
+        } else {
+          // No partner found, ask for raffle number
+          await this.sendMessage(
+            from,
+            `📸 ¡Comprobante de pago recibido!\n\n` +
+              `💰 Monto detectado: $${ocrResult.amount.toLocaleString('es-CO')}\n` +
+              `📅 Mes: ${this.getMonthName(currentMonth)} ${currentYear}\n\n` +
+              `${ocrResult.allAmounts.length > 1 ? `📊 Otros montos encontrados: ${ocrResult.allAmounts.filter(a => a !== ocrResult.amount).map(a => '$' + a.toLocaleString('es-CO')).join(', ')}\n\n` : ''}` +
+              `⚠️ No se encontró el número de rifa asociado.\n` +
+              `Por favor responda con su número de rifa (ej: "#5" o "Rifa 5")`,
+          );
+        }
       } else {
         await this.sendMessage(
           from,
-          `📸 Payment voucher received!\n\n` +
-            `⚠️ Could not automatically detect the payment amount.\n` +
-            `Please reply with the payment amount (e.g., "150000")`,
+          `📸 ¡Comprobante de pago recibido!\n\n` +
+            `⚠️ No se pudo detectar automáticamente el monto del pago.\n\n` +
+            `Por favor responda con:\n` +
+            `1. Su número de rifa (ej: "#5")\n` +
+            `2. El monto del pago (ej: "150000")`,
         );
       }
 
       // Log for manual processing
       this.logger.log(
-        `Payment voucher received - From: ${from}, Image: ${imageId}, Caption: ${caption}, OCR Amount: ${ocrResult.amount}`,
+        `Payment voucher received - From: ${from}, Partner: ${partnerIdentifier}, Image: ${imageId}, Caption: ${caption}, OCR Amount: ${ocrResult.amount}, All amounts: ${ocrResult.allAmounts.join(', ')}`,
       );
     } catch (error) {
       this.logger.error('Error handling image message:', error);
-      await this.sendMessage(from, '❌ Error processing payment voucher. Please try again.');
+      await this.sendMessage(from, '❌ Error procesando el comprobante de pago. Por favor intente de nuevo.');
     }
+  }
+
+  /**
+   * Extract raffle number from text (e.g., "#5", "Rifa 5", "rifa5")
+   */
+  private extractRaffleNumber(text: string): number | null {
+    const match = text.match(/#?(?:rifa\s*)?(\d+)/i);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      return isNaN(num) ? null : num;
+    }
+    return null;
+  }
+
+  /**
+   * Get month name in Spanish
+   */
+  private getMonthName(month: number): string {
+    const months = [
+      'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+    ];
+    return months[month - 1] || 'Desconocido';
   }
 
   /**
@@ -190,28 +268,5 @@ export class WhatsAppService {
     } catch (error) {
       this.logger.error('Error sending message:', error);
     }
-  }
-
-  /**
-   * Extract partner info from caption or contact name
-   */
-  private extractPartnerInfo(caption: string, contactName?: string): string | null {
-    // Try to extract raffle number from caption (e.g., "#5" or "Rifa 5")
-    const raffleMatch = caption.match(/#?(\d+)/);
-    if (raffleMatch) {
-      return `Raffle #${raffleMatch[1]}`;
-    }
-
-    // Use contact name if available
-    if (contactName) {
-      return contactName;
-    }
-
-    // Use caption as name if not empty
-    if (caption.trim()) {
-      return caption.trim();
-    }
-
-    return null;
   }
 }

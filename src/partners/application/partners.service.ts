@@ -38,6 +38,14 @@ export class PartnersService {
     return this.toResponse(partner);
   }
 
+  async findByNumeroRifa(numeroRifa: number): Promise<PartnerResponseDto | null> {
+    const partner = await this.partnerRepository.findByNumeroRifa(numeroRifa);
+    if (!partner) {
+      return null;
+    }
+    return this.toResponse(partner);
+  }
+
   async create(dto: CreatePartnerDto): Promise<PartnerResponseDto> {
     const existing = await this.partnerRepository.findByNumeroRifa(dto.numeroRifa);
     if (existing) {
