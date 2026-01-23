@@ -1,10 +1,15 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString, IsDateString, IsEnum } from 'class-validator';
-import { PaymentStatus } from '../../domain/payment.entity';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, IsDateString, Min, Max } from 'class-validator';
 
 export class CreatePaymentDto {
   @IsNotEmpty()
   @IsString()
   partnerId: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(12)
+  month?: number;
 
   @IsOptional()
   @IsDateString()

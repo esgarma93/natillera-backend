@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { OcrService } from './ocr.service';
+import { VoucherParserService } from './voucher-parser.service';
 import axios from 'axios';
 
 @Injectable()
@@ -13,6 +14,7 @@ export class WhatsAppService {
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
     private readonly ocrService: OcrService,
+    private readonly voucherParserService: VoucherParserService,
   ) {}
 
   /**
@@ -84,8 +86,25 @@ export class WhatsAppService {
         return;
       }
 
-      // Try to extract amount using OCR
+      // Try to extract text using OCR and parse voucher
       const ocrResult = await this.ocrService.extractAmountFromImage(imageUrl);
+      const parsedVoucher = this.voucherParserService.parseVoucher(ocrResult.rawText || '');
+
+      this.logger.log(`Parsed voucher: type=${parsedVoucher.type}, amount=${parsedVoucher.amount}, confidence=${parsedVoucher.confidence}`);
+
+      // Check if voucher type is accepted (only Nequi and Bancolombia)
+      if (!this.voucherParserService.isAcceptedVoucherType(parsedVoucher.type)) {
+        await this.sendMessage(
+          from,
+          `❌ Comprobante rechazado.\n\n` +
+            `⚠️ Solo se aceptan comprobantes de Nequi o Bancolombia.\n` +
+            `Por favor envíe un comprobante válido.`,
+        );
+        
+        // Log rejected voucher
+        this.logger.warn(`Rejected voucher - Invalid type: ${parsedVoucher.type}, From: ${from}`);
+        return;
+      }
 
       // Try to extract partner info from caption or contact name
       const raffleNumber = this.extractRaffleNumber(caption);
@@ -106,29 +125,50 @@ export class WhatsAppService {
       const currentMonth = new Date().getMonth() + 1;
       const currentYear = new Date().getFullYear();
 
-      if (ocrResult.amount !== null) {
-        // If we found a partner, create a payment record
+      const detectedAmount = parsedVoucher.amount || ocrResult.amount;
+
+      if (detectedAmount !== null) {
+        // If we found a partner, create a payment record with validation
         if (partner) {
           try {
-            await this.paymentsService.createFromWhatsApp(
+            // Validate voucher against partner's expected amount
+            const validation = this.voucherParserService.validatePaymentVoucher(
+              parsedVoucher,
+              partner.montoCuota,
+            );
+
+            // Create payment with appropriate status
+            const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
               partner.id,
-              ocrResult.amount,
+              detectedAmount,
               imageUrl,
               messageId,
+              parsedVoucher.type,
+              parsedVoucher.date,
+              validation.issues,
             );
-            this.logger.log(`Payment record created for partner: ${partner.nombre}`);
 
-            await this.sendMessage(
-              from,
-              `📸 ¡Comprobante de pago recibido!\n\n` +
-                `👤 Socio: ${partner.nombre}\n` +
-                `🎰 Rifa: #${partner.numeroRifa}\n` +
-                `💰 Monto detectado: $${ocrResult.amount.toLocaleString('es-CO')}\n` +
-                `💵 Cuota esperada: $${partner.montoCuota.toLocaleString('es-CO')}\n` +
-                `📅 Mes: ${this.getMonthName(currentMonth)} ${currentYear}\n\n` +
-                `✅ El pago ha sido registrado y será verificado pronto.\n` +
-                `Si hay algún error, por favor responda con el monto correcto.`,
-            );
+            this.logger.log(`Payment record created for partner: ${partner.nombre}, status: ${paymentResult.status}`);
+
+            // Build response message based on validation result
+            let responseMessage = `📸 ¡Comprobante de pago recibido!\n\n` +
+              `👤 Socio: ${partner.nombre}\n` +
+              `🎰 Rifa: #${partner.numeroRifa}\n` +
+              `💰 Monto detectado: $${detectedAmount.toLocaleString('es-CO')}\n` +
+              `💵 Cuota esperada: $${partner.montoCuota.toLocaleString('es-CO')}\n` +
+              `📅 Mes: ${this.getMonthName(currentMonth)} ${currentYear}\n` +
+              `🏦 Tipo: ${parsedVoucher.type.toUpperCase()}\n\n`;
+
+            if (validation.issues.length > 0) {
+              responseMessage += `⚠️ Estado: PENDIENTE DE REVISIÓN\n\n` +
+                `Observaciones:\n${validation.issues.map(i => `• ${i}`).join('\n')}\n\n` +
+                `El pago será revisado manualmente por un administrador.`;
+            } else {
+              responseMessage += `✅ El pago ha sido registrado y será verificado pronto.\n` +
+                `Si hay algún error, por favor responda con el monto correcto.`;
+            }
+
+            await this.sendMessage(from, responseMessage);
           } catch (paymentError) {
             this.logger.error('Error creating payment record:', paymentError);
             await this.sendMessage(
@@ -142,9 +182,9 @@ export class WhatsAppService {
           await this.sendMessage(
             from,
             `📸 ¡Comprobante de pago recibido!\n\n` +
-              `💰 Monto detectado: $${ocrResult.amount.toLocaleString('es-CO')}\n` +
+              `🏦 Tipo: ${parsedVoucher.type.toUpperCase()}\n` +
+              `💰 Monto detectado: $${detectedAmount.toLocaleString('es-CO')}\n` +
               `📅 Mes: ${this.getMonthName(currentMonth)} ${currentYear}\n\n` +
-              `${ocrResult.allAmounts.length > 1 ? `📊 Otros montos encontrados: ${ocrResult.allAmounts.filter(a => a !== ocrResult.amount).map(a => '$' + a.toLocaleString('es-CO')).join(', ')}\n\n` : ''}` +
               `⚠️ No se encontró el número de rifa asociado.\n` +
               `Por favor responda con su número de rifa (ej: "#5" o "Rifa 5")`,
           );
@@ -153,6 +193,7 @@ export class WhatsAppService {
         await this.sendMessage(
           from,
           `📸 ¡Comprobante de pago recibido!\n\n` +
+            `🏦 Tipo: ${parsedVoucher.type.toUpperCase()}\n` +
             `⚠️ No se pudo detectar automáticamente el monto del pago.\n\n` +
             `Por favor responda con:\n` +
             `1. Su número de rifa (ej: "#5")\n` +
@@ -162,7 +203,7 @@ export class WhatsAppService {
 
       // Log for manual processing
       this.logger.log(
-        `Payment voucher received - From: ${from}, Partner: ${partnerIdentifier}, Image: ${imageId}, Caption: ${caption}, OCR Amount: ${ocrResult.amount}, All amounts: ${ocrResult.allAmounts.join(', ')}`,
+        `Payment voucher received - From: ${from}, Partner: ${partnerIdentifier}, Type: ${parsedVoucher.type}, Image: ${imageId}, Caption: ${caption}, Amount: ${detectedAmount}`,
       );
     } catch (error) {
       this.logger.error('Error handling image message:', error);

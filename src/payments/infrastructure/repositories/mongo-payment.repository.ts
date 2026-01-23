@@ -13,7 +13,7 @@ export class MongoPaymentRepository implements PaymentRepository {
   ) {}
 
   async findAll(): Promise<Payment[]> {
-    const payments = await this.paymentModel.find().sort({ paymentDate: -1 }).exec();
+    const payments = await this.paymentModel.find().sort({ periodYear: -1, month: -1, paymentDate: -1 }).exec();
     return payments.map((doc) => this.toEntity(doc));
   }
 
@@ -25,9 +25,40 @@ export class MongoPaymentRepository implements PaymentRepository {
   async findByPartnerId(partnerId: string): Promise<Payment[]> {
     const payments = await this.paymentModel
       .find({ partnerId })
-      .sort({ paymentDate: -1 })
+      .sort({ periodYear: -1, month: -1 })
       .exec();
     return payments.map((doc) => this.toEntity(doc));
+  }
+
+  async findByPeriodId(periodId: string): Promise<Payment[]> {
+    const payments = await this.paymentModel
+      .find({ periodId })
+      .sort({ month: 1, partnerName: 1 })
+      .exec();
+    return payments.map((doc) => this.toEntity(doc));
+  }
+
+  async findByPeriodAndMonth(periodId: string, month: number): Promise<Payment[]> {
+    const payments = await this.paymentModel
+      .find({ periodId, month })
+      .sort({ partnerName: 1 })
+      .exec();
+    return payments.map((doc) => this.toEntity(doc));
+  }
+
+  async findByPartnerAndPeriod(partnerId: string, periodId: string): Promise<Payment[]> {
+    const payments = await this.paymentModel
+      .find({ partnerId, periodId })
+      .sort({ month: 1 })
+      .exec();
+    return payments.map((doc) => this.toEntity(doc));
+  }
+
+  async findByPartnerPeriodAndMonth(partnerId: string, periodId: string, month: number): Promise<Payment | null> {
+    const payment = await this.paymentModel
+      .findOne({ partnerId, periodId, month })
+      .exec();
+    return payment ? this.toEntity(payment) : null;
   }
 
   async findByDateRange(startDate: Date, endDate: Date): Promise<Payment[]> {
@@ -63,11 +94,16 @@ export class MongoPaymentRepository implements PaymentRepository {
       id: doc._id.toString(),
       partnerId: doc.partnerId,
       partnerName: doc.partnerName,
+      periodId: doc.periodId,
+      periodYear: doc.periodYear,
+      month: doc.month,
       paymentDate: doc.paymentDate,
       amount: doc.amount,
       expectedAmount: doc.expectedAmount,
       difference: doc.difference,
       status: doc.status,
+      pendingDescription: doc.pendingDescription,
+      voucherType: doc.voucherType,
       voucherImageUrl: doc.voucherImageUrl,
       whatsappMessageId: doc.whatsappMessageId,
       notes: doc.notes,

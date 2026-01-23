@@ -1,10 +1,16 @@
-import { IsNumber, IsOptional, IsString, IsDateString, IsEnum } from 'class-validator';
+import { IsNumber, IsOptional, IsString, IsDateString, IsEnum, Min, Max } from 'class-validator';
 import { PaymentStatus } from '../../domain/payment.entity';
 
 export class UpdatePaymentDto {
   @IsOptional()
   @IsString()
   partnerId?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(12)
+  month?: number;
 
   @IsOptional()
   @IsDateString()

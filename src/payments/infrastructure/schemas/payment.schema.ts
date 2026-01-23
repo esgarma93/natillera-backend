@@ -13,6 +13,15 @@ export class PaymentSchema {
   partnerName: string;
 
   @Prop({ required: true })
+  periodId: string;
+
+  @Prop()
+  periodYear: number;
+
+  @Prop({ required: true, min: 1, max: 12 })
+  month: number;
+
+  @Prop({ required: true })
   paymentDate: Date;
 
   @Prop({ required: true })
@@ -24,8 +33,14 @@ export class PaymentSchema {
   @Prop({ required: true })
   difference: number;
 
-  @Prop({ required: true, enum: PaymentStatus, default: PaymentStatus.PENDING })
+  @Prop({ type: String, required: true, enum: PaymentStatus, default: PaymentStatus.PENDING })
   status: PaymentStatus;
+
+  @Prop()
+  pendingDescription: string;
+
+  @Prop()
+  voucherType: string;
 
   @Prop()
   voucherImageUrl: string;
@@ -44,3 +59,6 @@ export class PaymentSchema {
 }
 
 export const PaymentSchemaFactory = SchemaFactory.createForClass(PaymentSchema);
+
+// Create compound index for unique payment per partner per month per period
+PaymentSchemaFactory.index({ partnerId: 1, periodId: 1, month: 1 }, { unique: true });

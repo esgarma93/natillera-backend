@@ -30,6 +30,19 @@ export class PaymentsController {
     return this.paymentsService.findByPartnerId(partnerId);
   }
 
+  @Get('period/:periodId')
+  async findByPeriodId(@Param('periodId') periodId: string) {
+    return this.paymentsService.findByPeriodId(periodId);
+  }
+
+  @Get('period/:periodId/month/:month')
+  async findByPeriodAndMonth(
+    @Param('periodId') periodId: string,
+    @Param('month') month: string,
+  ) {
+    return this.paymentsService.findByPeriodAndMonth(periodId, parseInt(month, 10));
+  }
+
   @Get('date-range')
   async findByDateRange(
     @Query('startDate') startDate: string,
