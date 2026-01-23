@@ -78,43 +78,7 @@ export class OcrService {
         };
       }
 
-      // Perform OCR using Google Cloud Vision
-      const [result] = await this.visionClient.textDetection({
-        image: { content: imageBuffer },
-      });
-
-      const detections = result.textAnnotations;
-      
-      if (!detections || detections.length === 0) {
-        this.logger.log('No text detected in image');
-        return {
-          amount: null,
-          rawText: 'No text detected in image',
-          confidence: 0,
-          allAmounts: [],
-        };
-      }
-
-      // First detection contains all text
-      const rawText = detections[0].description || '';
-      this.logger.log(`OCR Raw Text: ${rawText.substring(0, 200)}...`);
-
-      // Extract all amounts from text
-      const allAmounts = this.extractAmountsFromText(rawText);
-      this.logger.log(`Extracted amounts: ${allAmounts.join(', ')}`);
-
-      // Find the most likely payment amount
-      const amount = this.findMostLikelyPaymentAmount(allAmounts);
-      
-      // Calculate confidence based on amount detection
-      const confidence = amount !== null ? 0.85 : 0;
-
-      return {
-        amount,
-        rawText,
-        confidence,
-        allAmounts,
-      };
+      return this.processImageBuffer(imageBuffer);
     } catch (error) {
       this.logger.error('Error performing OCR:', error);
       return {
@@ -124,6 +88,82 @@ export class OcrService {
         allAmounts: [],
       };
     }
+  }
+
+  /**
+   * Extract payment amount from base64 encoded image
+   */
+  async extractAmountFromBase64(base64Image: string): Promise<OcrResult> {
+    this.logger.log('Processing base64 image for OCR');
+
+    if (!this.visionClient) {
+      this.logger.warn('Vision client not initialized, returning empty result');
+      return {
+        amount: null,
+        rawText: 'OCR not configured - Google Cloud Vision credentials missing',
+        confidence: 0,
+        allAmounts: [],
+      };
+    }
+
+    try {
+      // Remove data URL prefix if present (e.g., "data:image/jpeg;base64,")
+      const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+
+      return this.processImageBuffer(imageBuffer);
+    } catch (error) {
+      this.logger.error('Error performing OCR on base64 image:', error);
+      return {
+        amount: null,
+        rawText: `OCR error: ${error.message}`,
+        confidence: 0,
+        allAmounts: [],
+      };
+    }
+  }
+
+  /**
+   * Process image buffer with OCR
+   */
+  private async processImageBuffer(imageBuffer: Buffer): Promise<OcrResult> {
+    // Perform OCR using Google Cloud Vision
+    const [result] = await this.visionClient.textDetection({
+      image: { content: imageBuffer },
+    });
+
+    const detections = result.textAnnotations;
+    
+    if (!detections || detections.length === 0) {
+      this.logger.log('No text detected in image');
+      return {
+        amount: null,
+        rawText: 'No text detected in image',
+        confidence: 0,
+        allAmounts: [],
+      };
+    }
+
+    // First detection contains all text
+    const rawText = detections[0].description || '';
+    this.logger.log(`OCR Raw Text: ${rawText.substring(0, 200)}...`);
+
+    // Extract all amounts from text
+    const allAmounts = this.extractAmountsFromText(rawText);
+    this.logger.log(`Extracted amounts: ${allAmounts.join(', ')}`);
+
+    // Find the most likely payment amount
+    const amount = this.findMostLikelyPaymentAmount(allAmounts);
+    
+    // Calculate confidence based on amount detection
+    const confidence = amount !== null ? 0.85 : 0;
+
+    return {
+      amount,
+      rawText,
+      confidence,
+      allAmounts,
+    };
   }
 
   /**
