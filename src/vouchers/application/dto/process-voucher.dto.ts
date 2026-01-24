@@ -11,6 +11,12 @@ export class ProcessVoucherDto {
   @Max(12)
   month?: number;
 
+  @IsOptional()
+  @IsNumber()
+  @Min(2020)
+  @Max(2100)
+  year?: number;
+
   @IsNotEmpty()
   @IsString()
   imageBase64: string;

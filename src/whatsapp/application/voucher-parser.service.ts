@@ -201,10 +201,16 @@ export class VoucherParserService {
 
   /**
    * Validate voucher and return validation issues
+   * @param parsedVoucher - The parsed voucher data
+   * @param expectedAmount - The expected payment amount
+   * @param paymentMonth - The month the payment is for (1-12), optional
+   * @param paymentYear - The year the payment is for, optional
    */
   validatePaymentVoucher(
     parsedVoucher: ParsedVoucher,
     expectedAmount: number,
+    paymentMonth?: number,
+    paymentYear?: number,
   ): { isValid: boolean; issues: string[] } {
     const issues: string[] = [];
 
@@ -227,11 +233,32 @@ export class VoucherParserService {
       }
     }
 
-    // Check payment date (must be before 5th of the month)
-    if (parsedVoucher.date) {
-      const voucherDay = parsedVoucher.date.getDate();
-      if (voucherDay > this.PAYMENT_DUE_DAY) {
-        issues.push(`El comprobante tiene fecha del día ${voucherDay}, después del día ${this.PAYMENT_DUE_DAY} límite de pago.`);
+    // Validate voucher date against payment month
+    // A payment for month X can be made with a voucher dated:
+    // - Any day in month X, OR
+    // - Day 1-5 of month X+1 (grace period)
+    if (parsedVoucher.date && paymentMonth && paymentYear) {
+      const voucherDate = parsedVoucher.date;
+      const voucherMonth = voucherDate.getMonth() + 1; // 1-12
+      const voucherYear = voucherDate.getFullYear();
+      const voucherDay = voucherDate.getDate();
+
+      // Calculate next month and year (for grace period)
+      const nextMonth = paymentMonth === 12 ? 1 : paymentMonth + 1;
+      const nextYear = paymentMonth === 12 ? paymentYear + 1 : paymentYear;
+
+      const isInPaymentMonth = voucherMonth === paymentMonth && voucherYear === paymentYear;
+      const isInGracePeriod = voucherMonth === nextMonth && voucherYear === nextYear && voucherDay <= this.PAYMENT_DUE_DAY;
+
+      if (!isInPaymentMonth && !isInGracePeriod) {
+        const monthNames = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
+                          'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+        
+        if (voucherMonth === nextMonth && voucherYear === nextYear && voucherDay > this.PAYMENT_DUE_DAY) {
+          issues.push(`El comprobante tiene fecha del ${voucherDay} de ${monthNames[voucherMonth]}, después del día ${this.PAYMENT_DUE_DAY} límite para pagos de ${monthNames[paymentMonth]}.`);
+        } else {
+          issues.push(`La fecha del comprobante (${voucherDay}/${voucherMonth}/${voucherYear}) no corresponde al mes de pago ${monthNames[paymentMonth]} ${paymentYear}.`);
+        }
       }
     }
 

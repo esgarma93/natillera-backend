@@ -131,10 +131,12 @@ export class WhatsAppService {
         // If we found a partner, create a payment record with validation
         if (partner) {
           try {
-            // Validate voucher against partner's expected amount
+            // Validate voucher against partner's expected amount and current period
             const validation = this.voucherParserService.validatePaymentVoucher(
               parsedVoucher,
               partner.montoCuota,
+              currentMonth,
+              currentYear,
             );
 
             // Create payment with appropriate status

@@ -81,14 +81,17 @@ export class VouchersService {
       };
     }
 
-    // Validate voucher against expected amount
+    // Determine month and year (use provided values or current date)
+    const month = dto.month || (new Date().getMonth() + 1);
+    const year = dto.year || new Date().getFullYear();
+
+    // Validate voucher against expected amount and payment period
     const validation = this.voucherParserService.validatePaymentVoucher(
       parsedVoucher,
       partner.montoCuota,
+      month,
+      year,
     );
-
-    // Determine month (use provided month or current month)
-    const month = dto.month || (new Date().getMonth() + 1);
 
     // Add notes from validation
     if (dto.notes) {
