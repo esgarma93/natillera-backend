@@ -1,6 +1,7 @@
 export interface IPartner {
   id?: string;
   nombre: string;
+  celular?: string;
   montoCuota: number;
   numeroRifa: number;
   idPartnerPatrocinador?: string;
@@ -12,6 +13,7 @@ export interface IPartner {
 export class Partner implements IPartner {
   id?: string;
   nombre: string;
+  celular?: string;
   montoCuota: number;
   numeroRifa: number;
   idPartnerPatrocinador?: string;
@@ -22,6 +24,7 @@ export class Partner implements IPartner {
   constructor(partial: Partial<IPartner>) {
     this.id = partial.id;
     this.nombre = partial.nombre || '';
+    this.celular = partial.celular;
     this.montoCuota = partial.montoCuota || 0;
     this.numeroRifa = partial.numeroRifa || 0;
     this.idPartnerPatrocinador = partial.idPartnerPatrocinador;
@@ -41,6 +44,7 @@ export class Partner implements IPartner {
 
   update(data: Partial<IPartner>): void {
     if (data.nombre !== undefined) this.nombre = data.nombre;
+    if (data.celular !== undefined) this.celular = data.celular;
     if (data.montoCuota !== undefined) this.montoCuota = data.montoCuota;
     if (data.numeroRifa !== undefined) this.numeroRifa = data.numeroRifa;
     if (data.idPartnerPatrocinador !== undefined) this.idPartnerPatrocinador = data.idPartnerPatrocinador;

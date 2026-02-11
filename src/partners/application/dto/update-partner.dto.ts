@@ -6,6 +6,10 @@ export class UpdatePartnerDto {
   nombre?: string;
 
   @IsOptional()
+  @IsString()
+  celular?: string;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   montoCuota?: number;

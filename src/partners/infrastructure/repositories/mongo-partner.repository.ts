@@ -16,6 +16,7 @@ export class MongoPartnerRepository implements IPartnerRepository {
     return new Partner({
       id: doc._id.toString(),
       nombre: doc.nombre,
+      celular: doc.celular,
       montoCuota: doc.montoCuota,
       numeroRifa: doc.numeroRifa,
       idPartnerPatrocinador: doc.idPartnerPatrocinador?.toString() || undefined,
@@ -40,9 +41,15 @@ export class MongoPartnerRepository implements IPartnerRepository {
     return doc ? this.toDomain(doc) : null;
   }
 
+  async findByCelular(celular: string): Promise<Partner | null> {
+    const doc = await this.partnerModel.findOne({ celular }).exec();
+    return doc ? this.toDomain(doc) : null;
+  }
+
   async create(partner: Partner): Promise<Partner> {
     const created = new this.partnerModel({
       nombre: partner.nombre,
+      celular: partner.celular,
       montoCuota: partner.montoCuota,
       numeroRifa: partner.numeroRifa,
       idPartnerPatrocinador: partner.idPartnerPatrocinador || null,

@@ -6,6 +6,9 @@ export class PartnerDocument extends Document {
   @Prop({ required: true, trim: true })
   nombre: string;
 
+  @Prop({ trim: true, sparse: true, index: true })
+  celular: string;
+
   @Prop({ required: true, min: 0 })
   montoCuota: number;
 

@@ -110,11 +110,20 @@ export class WhatsAppService {
       const raffleNumber = this.extractRaffleNumber(caption);
       const contactName = contact?.profile?.name || caption.trim() || null;
 
-      // Try to find partner by raffle number
+      // Try to find partner by cellphone number first (WhatsApp integration)
       let partner = null;
       let partnerIdentifier = contactName || `WhatsApp: ${from}`;
 
-      if (raffleNumber) {
+      // Normalize the phone number (remove + and any special characters)
+      const normalizedPhone = from.replace(/\D/g, '');
+      
+      // Try to find partner by cellphone
+      partner = await this.partnersService.findByCelular(normalizedPhone);
+      
+      if (partner) {
+        partnerIdentifier = `${partner.nombre} (Rifa #${partner.numeroRifa})`;
+      } else if (raffleNumber) {
+        // Fallback: try to find partner by raffle number if provided in caption
         partner = await this.partnersService.findByNumeroRifa(raffleNumber);
         if (partner) {
           partnerIdentifier = `${partner.nombre} (Rifa #${partner.numeroRifa})`;
@@ -187,8 +196,9 @@ export class WhatsAppService {
               `🏦 Tipo: ${parsedVoucher.type.toUpperCase()}\n` +
               `💰 Monto detectado: $${detectedAmount.toLocaleString('es-CO')}\n` +
               `📅 Mes: ${this.getMonthName(currentMonth)} ${currentYear}\n\n` +
-              `⚠️ No se encontró el número de rifa asociado.\n` +
-              `Por favor responda con su número de rifa (ej: "#5" o "Rifa 5")`,
+              `⚠️ No se encontró un socio asociado a su número de teléfono.\n` +
+              `Por favor, asegúrese de que su número de celular (${normalizedPhone}) esté registrado en el sistema.\n` +
+              `O responda con su número de rifa (ej: "#5" o "Rifa 5")`,
           );
         }
       } else {
@@ -197,9 +207,10 @@ export class WhatsAppService {
           `📸 ¡Comprobante de pago recibido!\n\n` +
             `🏦 Tipo: ${parsedVoucher.type.toUpperCase()}\n` +
             `⚠️ No se pudo detectar automáticamente el monto del pago.\n\n` +
+            `${partner ? `Se identificó su cuenta correctamente.` : `No se encontró un socio asociado a su número de teléfono (${normalizedPhone}).`}\n\n` +
             `Por favor responda con:\n` +
-            `1. Su número de rifa (ej: "#5")\n` +
-            `2. El monto del pago (ej: "150000")`,
+            `${partner ? '' : `1. Su número de rifa (ej: "#5") o\n`}` +
+            `${partner ? '- ' : '2. '}El monto del pago (ej: "150000")`,
         );
       }
 

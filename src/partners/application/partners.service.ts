@@ -16,6 +16,7 @@ export class PartnersService {
     return {
       id: partner.id!,
       nombre: partner.nombre,
+      celular: partner.celular,
       montoCuota: partner.montoCuota,
       numeroRifa: partner.numeroRifa,
       idPartnerPatrocinador: partner.idPartnerPatrocinador,
@@ -40,6 +41,14 @@ export class PartnersService {
 
   async findByNumeroRifa(numeroRifa: number): Promise<PartnerResponseDto | null> {
     const partner = await this.partnerRepository.findByNumeroRifa(numeroRifa);
+    if (!partner) {
+      return null;
+    }
+    return this.toResponse(partner);
+  }
+
+  async findByCelular(celular: string): Promise<PartnerResponseDto | null> {
+    const partner = await this.partnerRepository.findByCelular(celular);
     if (!partner) {
       return null;
     }

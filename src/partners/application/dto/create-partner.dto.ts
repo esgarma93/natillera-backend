@@ -5,6 +5,10 @@ export class CreatePartnerDto {
   @IsNotEmpty()
   nombre: string;
 
+  @IsOptional()
+  @IsString()
+  celular?: string;
+
   @IsNumber()
   @Min(0)
   montoCuota: number;
