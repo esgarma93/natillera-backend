@@ -2,12 +2,42 @@
 
 NestJS backend for the Natillera savings group management application.
 
+## 🚀 Quick Start
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/esgarma93/natillera-backend.git
+   cd natillera-backend
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Set up environment variables**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your credentials
+   ```
+
+4. **Run the application**
+   ```bash
+   npm run start:dev
+   ```
+
 ## Features
 
 - **Partners Module**: CRUD operations for managing group members
+  - Track partner information (name, raffle number, monthly quota, **cellphone number**)
+  - WhatsApp integration: Automatically identify partners by phone number
 - **Payments Module**: Track monthly payments with verification workflow
 - **WhatsApp Integration**: Receive payment vouchers via WhatsApp Business API
+  - Automatic partner identification by cellphone number
+  - Fallback to raffle number if phone not registered
 - **OCR Processing**: Automatic payment amount extraction using Google Cloud Vision
+  - Support for Nequi and Bancolombia vouchers
+  - Automatic validation and verification
 
 ## Project Structure
 
@@ -27,11 +57,18 @@ NestJS backend for the Natillera savings group management application.
 
 ## Environment Variables
 
-Create a `.env` file with the following variables:
+Create a `.env` file based on `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Then configure the following variables:
 
 ```env
 # Server
 PORT=3001
+NODE_ENV=development
 
 # MongoDB
 MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/natillera
@@ -42,12 +79,11 @@ WHATSAPP_ACCESS_TOKEN=your_whatsapp_access_token
 WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
 
 # Google Cloud Vision (for OCR)
-# Option 1: JSON credentials string (for cloud deployment)
+# JSON credentials string (single line)
 GOOGLE_CLOUD_CREDENTIALS={"type":"service_account","project_id":"..."}
-
-# Option 2: Path to credentials file (for local development)
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 ```
+
+> ⚠️ **Security Note**: Never commit the `.env` file to Git. It contains sensitive credentials.
 
 ## Google Cloud Vision Setup
 
