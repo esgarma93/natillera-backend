@@ -93,12 +93,18 @@ export class VouchersService {
       year,
     );
 
-    // Check for critical validation errors (wrong destination account)
+    this.logger.log(`Validation result: ${JSON.stringify(validation)}`);
+    this.logger.log(`Recipient account detected: ${parsedVoucher.recipientAccount}`);
+
+    // Check for critical validation errors (wrong destination account or account not detected)
     const hasCriticalError = validation.issues.some(issue => 
-      issue.includes('cuenta destino') || issue.includes('cuenta de la natillera')
+      issue.includes('cuenta destino') || 
+      issue.includes('cuenta de la natillera') ||
+      issue.includes('No se pudo detectar la cuenta destino')
     );
 
     if (hasCriticalError) {
+      this.logger.warn(`Critical validation error detected. Rejecting voucher. Issues: ${validation.issues.join(', ')}`);
       return {
         success: false,
         voucher: {
@@ -332,6 +338,9 @@ export class VouchersService {
       if (detectedAccount !== expectedAccount) {
         issues.push(`La cuenta destino (${parsedVoucher.recipientAccount}) no coincide con la cuenta de la natillera (33177135742).`);
       }
+    } else {
+      // If no destination account detected, it's a critical error
+      issues.push(`No se pudo detectar la cuenta destino en el comprobante. Por seguridad, este pago requiere verificación manual.`);
     }
 
     return {

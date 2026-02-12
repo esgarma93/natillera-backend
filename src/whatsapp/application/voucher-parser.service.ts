@@ -231,6 +231,9 @@ export class VoucherParserService {
       if (account !== expectedAccount) {
         issues.push(`La cuenta destino (${parsedVoucher.recipientAccount}) no coincide con la cuenta de la natillera (${this.EXPECTED_DESTINATION_ACCOUNT}).`);
       }
+    } else {
+      // If no destination account detected, it's a critical error
+      issues.push(`No se pudo detectar la cuenta destino en el comprobante. Por seguridad, este pago requiere verificación manual.`);
     }
 
     // Validate voucher date against payment month
