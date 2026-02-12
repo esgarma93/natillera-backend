@@ -73,8 +73,8 @@ export class PaymentsService {
       throw new BadRequestException(`Partner with ID ${createPaymentDto.partnerId} not found`);
     }
 
-    // Use period's monthly fee or partner's montoCuota
-    const expectedAmount = activePeriod.monthlyFee || partner.montoCuota;
+    // Use partner's montoCuota or period's monthly fee as fallback
+    const expectedAmount = partner.montoCuota || activePeriod.monthlyFee;
     const amount = createPaymentDto.amount;
     const difference = amount - expectedAmount;
     const month = createPaymentDto.month || new Date().getMonth() + 1;
@@ -125,7 +125,7 @@ export class PaymentsService {
       throw new BadRequestException(`Partner with ID ${partnerId} not found`);
     }
 
-    const expectedAmount = activePeriod.monthlyFee || partner.montoCuota;
+    const expectedAmount = partner.montoCuota || activePeriod.monthlyFee;
     const difference = amount - expectedAmount;
     const month = new Date().getMonth() + 1;
 
@@ -182,7 +182,7 @@ export class PaymentsService {
       throw new BadRequestException(`Partner with ID ${partnerId} not found`);
     }
 
-    const expectedAmount = activePeriod.monthlyFee || partner.montoCuota;
+    const expectedAmount = partner.montoCuota || activePeriod.monthlyFee;
     const difference = amount - expectedAmount;
     
     // Determine month from voucher date or current date
