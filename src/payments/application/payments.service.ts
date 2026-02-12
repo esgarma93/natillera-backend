@@ -302,6 +302,75 @@ export class PaymentsService {
     await this.paymentRepository.delete(id);
   }
 
+  async getStatsByYear(year: number): Promise<{
+    year: number;
+    totalCollected: number;
+    totalVerified: number;
+    totalPending: number;
+    totalRejected: number;
+    monthlyBreakdown: Array<{
+      month: number;
+      monthName: string;
+      totalCollected: number;
+      verified: number;
+      pending: number;
+      rejected: number;
+    }>;
+  }> {
+    // Get all payments for the year
+    const startDate = new Date(year, 0, 1);
+    const endDate = new Date(year, 11, 31, 23, 59, 59);
+    const payments = await this.paymentRepository.findByDateRange(startDate, endDate);
+
+    // Calculate totals by status
+    const totalVerified = payments
+      .filter(p => p.status === PaymentStatus.VERIFIED)
+      .reduce((sum, p) => sum + p.amount, 0);
+    
+    const totalPending = payments
+      .filter(p => p.status === PaymentStatus.PENDING)
+      .reduce((sum, p) => sum + p.amount, 0);
+    
+    const totalRejected = payments
+      .filter(p => p.status === PaymentStatus.REJECTED)
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    // Total collected includes verified and pending (rejected are excluded from collection)
+    const totalCollected = totalVerified + totalPending;
+
+    // Monthly breakdown
+    const monthlyBreakdown = Array.from({ length: 12 }, (_, i) => {
+      const month = i + 1;
+      const monthPayments = payments.filter(p => p.month === month);
+      
+      return {
+        month,
+        monthName: PaymentsService.MONTH_NAMES[i],
+        totalCollected: monthPayments
+          .filter(p => p.status !== PaymentStatus.REJECTED)
+          .reduce((sum, p) => sum + p.amount, 0),
+        verified: monthPayments
+          .filter(p => p.status === PaymentStatus.VERIFIED)
+          .reduce((sum, p) => sum + p.amount, 0),
+        pending: monthPayments
+          .filter(p => p.status === PaymentStatus.PENDING)
+          .reduce((sum, p) => sum + p.amount, 0),
+        rejected: monthPayments
+          .filter(p => p.status === PaymentStatus.REJECTED)
+          .reduce((sum, p) => sum + p.amount, 0),
+      };
+    });
+
+    return {
+      year,
+      totalCollected,
+      totalVerified,
+      totalPending,
+      totalRejected,
+      monthlyBreakdown,
+    };
+  }
+
   private toResponseDto(payment: Payment): PaymentResponseDto {
     return {
       id: payment.id,

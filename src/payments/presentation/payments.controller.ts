@@ -51,6 +51,11 @@ export class PaymentsController {
     return this.paymentsService.findByDateRange(startDate, endDate);
   }
 
+  @Get('stats/year/:year')
+  async getStatsByYear(@Param('year') year: string) {
+    return this.paymentsService.getStatsByYear(parseInt(year, 10));
+  }
+
   @Get(':id')
   async findById(@Param('id') id: string) {
     return this.paymentsService.findById(id);
