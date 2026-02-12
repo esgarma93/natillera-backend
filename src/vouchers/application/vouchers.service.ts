@@ -93,6 +93,31 @@ export class VouchersService {
       year,
     );
 
+    // Check for critical validation errors (wrong destination account)
+    const hasCriticalError = validation.issues.some(issue => 
+      issue.includes('cuenta destino') || issue.includes('cuenta de la natillera')
+    );
+
+    if (hasCriticalError) {
+      return {
+        success: false,
+        voucher: {
+          type: parsedVoucher.type,
+          amount: detectedAmount,
+          date: parsedVoucher.date?.toISOString() || null,
+          destinationAccount: parsedVoucher.recipientAccount,
+          referenceNumber: parsedVoucher.referenceNumber,
+          confidence: parsedVoucher.confidence,
+          rawText: ocrResult.rawText,
+        },
+        validation: {
+          isValid: false,
+          issues: validation.issues,
+        },
+        error: 'Destination account validation failed',
+      };
+    }
+
     // Add notes from validation
     if (dto.notes) {
       validation.issues.push(`Notas: ${dto.notes}`);
