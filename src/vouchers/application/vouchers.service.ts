@@ -98,11 +98,51 @@ export class VouchersService {
       validation.issues.push(`Notas: ${dto.notes}`);
     }
 
+    // Calculate excess amount
+    const excessAmount = detectedAmount - partner.montoCuota;
+
+    // Get all partners to find sponsored ones
+    const allPartners = await this.partnersService.findAll();
+    const sponsoredPartners = allPartners.filter(
+      p => p.idPartnerPatrocinador === partner.id && p.activo
+    );
+
+    this.logger.log(`Partner ${partner.nombre} has ${sponsoredPartners.length} sponsored partners. Excess: ${excessAmount}`);
+
+    // If there's excess and sponsored partners but no selection provided, return for user selection
+    if (excessAmount > 0 && sponsoredPartners.length > 0 && !dto.sponsoredPartnerIds) {
+      return {
+        success: false,
+        needsSponsorSelection: true,
+        excessAmount,
+        sponsoredPartners: sponsoredPartners.map(sp => ({
+          id: sp.id,
+          nombre: sp.nombre,
+          numeroRifa: sp.numeroRifa,
+          montoCuota: sp.montoCuota,
+        })),
+        voucher: {
+          type: parsedVoucher.type,
+          amount: detectedAmount,
+          date: parsedVoucher.date?.toISOString() || null,
+          destinationAccount: parsedVoucher.recipientAccount,
+          referenceNumber: parsedVoucher.referenceNumber,
+          confidence: parsedVoucher.confidence,
+          rawText: ocrResult.rawText,
+        },
+        validation: {
+          isValid: validation.issues.length === 0,
+          issues: validation.issues,
+        },
+        error: 'Sponsor selection required for excess payment',
+      };
+    }
+
     try {
-      // Create payment with validation issues
+      // Create main payment
       const payment = await this.paymentsService.createFromWhatsAppWithValidation(
         partner.id,
-        detectedAmount,
+        partner.montoCuota, // Only pay the expected amount
         null, // No image URL for manual uploads
         null, // No WhatsApp message ID
         parsedVoucher.type,
@@ -110,9 +150,9 @@ export class VouchersService {
         validation.issues,
       );
 
-      this.logger.log(`Payment created for partner: ${partner.nombre}, amount: ${detectedAmount}, status: ${payment.status}`);
+      this.logger.log(`Payment created for partner: ${partner.nombre}, amount: ${partner.montoCuota}, status: ${payment.status}`);
 
-      return {
+      const result: any = {
         success: true,
         payment: {
           id: payment.id,
@@ -140,6 +180,70 @@ export class VouchersService {
           issues: validation.issues,
         },
       };
+
+      // Handle excess payment to sponsored partners
+      if (excessAmount > 0 && dto.sponsoredPartnerIds && dto.sponsoredPartnerIds.length > 0) {
+        let remainingExcess = excessAmount;
+        const additionalPayments = [];
+
+        for (const sponsoredId of dto.sponsoredPartnerIds) {
+          if (remainingExcess <= 0) break;
+
+          const sponsoredPartner = sponsoredPartners.find(sp => sp.id === sponsoredId);
+          if (!sponsoredPartner) continue;
+
+          const amountToApply = Math.min(remainingExcess, sponsoredPartner.montoCuota);
+          
+          try {
+            const sponsoredPayment = await this.paymentsService.createFromWhatsAppWithValidation(
+              sponsoredPartner.id,
+              amountToApply,
+              null,
+              null,
+              parsedVoucher.type,
+              parsedVoucher.date,
+              [`Pago aplicado del excedente del socio ${partner.nombre}`],
+            );
+
+            additionalPayments.push({
+              id: sponsoredPayment.id,
+              partnerId: sponsoredPayment.partnerId,
+              partnerName: sponsoredPayment.partnerName,
+              amount: sponsoredPayment.amount,
+              expectedAmount: sponsoredPayment.expectedAmount,
+              month: sponsoredPayment.month,
+              monthName: sponsoredPayment.monthName,
+              periodYear: sponsoredPayment.periodYear,
+              status: sponsoredPayment.status,
+              paymentDate: sponsoredPayment.paymentDate.toString(),
+            });
+
+            remainingExcess -= amountToApply;
+            this.logger.log(`Applied ${amountToApply} to sponsored partner ${sponsoredPartner.nombre}. Remaining: ${remainingExcess}`);
+          } catch (error) {
+            this.logger.error(`Error creating payment for sponsored partner ${sponsoredPartner.nombre}:`, error);
+          }
+        }
+
+        result.additionalPayments = additionalPayments;
+        result.excessAmount = remainingExcess;
+
+        // Check if more sponsored partners are available for remaining excess
+        const usedSponsorIds = dto.sponsoredPartnerIds;
+        const remainingSponsors = sponsoredPartners.filter(sp => !usedSponsorIds.includes(sp.id));
+        
+        if (remainingExcess > 0 && remainingSponsors.length > 0) {
+          result.needsSponsorSelection = true;
+          result.sponsoredPartners = remainingSponsors.map(sp => ({
+            id: sp.id,
+            nombre: sp.nombre,
+            numeroRifa: sp.numeroRifa,
+            montoCuota: sp.montoCuota,
+          }));
+        }
+      }
+
+      return result;
     } catch (error) {
       this.logger.error('Error creating payment:', error);
       return {

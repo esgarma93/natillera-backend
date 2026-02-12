@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString, Min, Max } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, Min, Max, IsArray } from 'class-validator';
 
 export class ProcessVoucherDto {
   @IsNotEmpty()
@@ -24,4 +24,9 @@ export class ProcessVoucherDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sponsoredPartnerIds?: string[]; // IDs of sponsored partners to apply excess payment
 }
