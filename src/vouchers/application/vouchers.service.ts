@@ -323,8 +323,19 @@ export class VouchersService {
       issues.push('No se pudo detectar el monto del pago en el comprobante');
     }
 
+    // Validate destination account
+    if (parsedVoucher.recipientAccount) {
+      const normalizeAccount = (account: string) => account.replace(/[-\s.]/g, '');
+      const detectedAccount = normalizeAccount(parsedVoucher.recipientAccount);
+      const expectedAccount = normalizeAccount('33177135742');
+      
+      if (detectedAccount !== expectedAccount) {
+        issues.push(`La cuenta destino (${parsedVoucher.recipientAccount}) no coincide con la cuenta de la natillera (33177135742).`);
+      }
+    }
+
     return {
-      success: isAcceptedType && detectedAmount !== null,
+      success: isAcceptedType && detectedAmount !== null && issues.length === 0,
       voucher: {
         type: parsedVoucher.type,
         amount: detectedAmount,
