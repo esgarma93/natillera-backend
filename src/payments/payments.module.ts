@@ -23,6 +23,6 @@ import { PeriodsModule } from '../periods/periods.module';
       useClass: MongoPaymentRepository,
     },
   ],
-  exports: [PaymentsService],
+  exports: [PaymentsService, 'PaymentRepository'],
 })
 export class PaymentsModule {}
