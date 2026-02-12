@@ -46,6 +46,14 @@ export class MongoPaymentRepository implements PaymentRepository {
     return payments.map((doc) => this.toEntity(doc));
   }
 
+  async findByMonthAndYear(month: number, year: number): Promise<Payment[]> {
+    const payments = await this.paymentModel
+      .find({ month, periodYear: year })
+      .sort({ partnerName: 1 })
+      .exec();
+    return payments.map((doc) => this.toEntity(doc));
+  }
+
   async findByPartnerAndPeriod(partnerId: string, periodId: string): Promise<Payment[]> {
     const payments = await this.paymentModel
       .find({ partnerId, periodId })

@@ -9,6 +9,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { VouchersModule } from './vouchers/vouchers.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { RafflesModule } from './raffles/raffles.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { UsersModule } from './users/users.module';
     PeriodsModule,
     WhatsAppModule,
     VouchersModule,
+    RafflesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

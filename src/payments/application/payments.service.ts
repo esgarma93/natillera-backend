@@ -50,6 +50,11 @@ export class PaymentsService {
     return payments.map((payment) => this.toResponseDto(payment));
   }
 
+  async findByMonthAndYear(month: number, year: number): Promise<PaymentResponseDto[]> {
+    const payments = await this.paymentRepository.findByMonthAndYear(month, year);
+    return payments.map((payment) => this.toResponseDto(payment));
+  }
+
   async findByPartnerAndPeriod(partnerId: string, periodId: string): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findByPartnerAndPeriod(partnerId, periodId);
     return payments.map((payment) => this.toResponseDto(payment));
