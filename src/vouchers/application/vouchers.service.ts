@@ -109,6 +109,15 @@ export class VouchersService {
 
     this.logger.log(`Partner ${partner.nombre} has ${sponsoredPartners.length} sponsored partners. Excess: ${excessAmount}`);
 
+    // If there's excess but no sponsored partners, add warning to validation issues
+    if (excessAmount > 0 && sponsoredPartners.length === 0) {
+      validation.issues.push(
+        `ADVERTENCIA: El monto del comprobante ($${detectedAmount.toLocaleString('es-CO')}) excede la cuota esperada ($${partner.montoCuota.toLocaleString('es-CO')}) por $${excessAmount.toLocaleString('es-CO')}. ` +
+        `El socio no tiene patrocinados para aplicar el excedente. Este pago requiere verificación manual.`
+      );
+      this.logger.warn(`Excess amount ${excessAmount} detected but no sponsored partners found for ${partner.nombre}`);
+    }
+
     // If there's excess and sponsored partners but no selection provided, return for user selection
     if (excessAmount > 0 && sponsoredPartners.length > 0 && !dto.sponsoredPartnerIds) {
       return {
