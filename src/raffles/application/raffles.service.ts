@@ -5,6 +5,7 @@ import { MonthlyRaffleRepository } from '../domain/monthly-raffle.repository';
 import { MonthlyRaffleResponseDto } from './dto/monthly-raffle-response.dto';
 import { PartnersService } from '../../partners/application/partners.service';
 import { PaymentsService } from '../../payments/application/payments.service';
+import { WhatsAppService } from '../../whatsapp/application/whatsapp.service';
 import * as cheerio from 'cheerio';
 
 @Injectable()
@@ -22,6 +23,7 @@ export class RafflesService {
     private readonly raffleRepository: MonthlyRaffleRepository,
     private readonly partnersService: PartnersService,
     private readonly paymentsService: PaymentsService,
+    private readonly whatsAppService: WhatsAppService,
   ) {}
 
   /**
@@ -68,7 +70,8 @@ export class RafflesService {
   }
 
   /**
-   * Find winner by matching last 2 digits with partner's raffle number
+   * Find winner by matching last 2 digits with partner's raffle number.
+   * Only active partners who have paid this month are eligible.
    */
   private async findWinner(winningDigits: string, month: number, year: number) {
     // Get all active partners
@@ -95,6 +98,7 @@ export class RafflesService {
           winnerId: partner.id,
           winnerName: partner.nombre,
           winnerRaffleNumber: partner.numeroRifa?.toString(),
+          winnerCelular: partner.celular,
         };
       }
     }
@@ -190,6 +194,34 @@ export class RafflesService {
       this.logger.log(
         `Winner found! ${winner.winnerName} (#${winner.winnerRaffleNumber}) wins $${prizeAmount.toLocaleString()}`
       );
+
+      // Notify winner via WhatsApp if they have a registered phone number
+      if (winner.winnerCelular) {
+        try {
+          // Add Colombian country prefix (57) for WhatsApp
+          const whatsappNumber = `57${winner.winnerCelular.replace(/\D/g, '')}`;
+          const monthName = this.MONTH_NAMES[month];
+
+          await this.whatsAppService.sendMessage(
+            whatsappNumber,
+            `🎉 *¡FELICITACIONES, ${winner.winnerName}!* 🎉\n\n` +
+            `🏆 *¡Eres el ganador de la rifa de ${monthName} ${year}!*\n\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `🎰 Tu número de rifa: *#${winner.winnerRaffleNumber}*\n` +
+            `🔢 Número ganador Lotería Medellín: *${lotteryNumber}*\n` +
+            `💰 Premio: *$${prizeAmount.toLocaleString('es-CO')}*\n` +
+            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `El administrador se pondrá en contacto contigo para hacer entrega del premio. 🤝\n\n` +
+            `_— Nacho, asistente de Natillera Chimba Verde 🌿_`,
+          );
+
+          this.logger.log(`Winner notification sent to ${winner.winnerName} (${whatsappNumber})`);
+        } catch (notifyError) {
+          this.logger.error(`Failed to send winner notification to ${winner.winnerName}:`, notifyError);
+        }
+      } else {
+        this.logger.warn(`Winner ${winner.winnerName} has no registered phone number — WhatsApp notification skipped`);
+      }
     } else {
       this.logger.log(`No winner for ${month}/${year}. Amount remains in natillera: $${remainingAmount.toLocaleString()}`);
     }

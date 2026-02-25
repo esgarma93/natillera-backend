@@ -7,6 +7,7 @@ import { MonthlyRaffleDocument, MonthlyRaffleSchema } from './infrastructure/sch
 import { MongoMonthlyRaffleRepository } from './infrastructure/repositories/mongo-monthly-raffle.repository';
 import { PartnersModule } from '../partners/partners.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { WhatsAppModule } from '../whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { PaymentsModule } from '../payments/payments.module';
     ScheduleModule.forRoot(),
     PartnersModule,
     PaymentsModule,
+    WhatsAppModule,
   ],
   controllers: [RafflesController],
   providers: [
