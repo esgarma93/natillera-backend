@@ -143,8 +143,8 @@ export class WhatsAppService {
       const raffleNumber = this.extractRaffleNumber(caption);
       const contactName = contact?.profile?.name || caption.trim() || null;
 
-      // Normalize the phone number (remove + and any special characters)
-      const normalizedPhone = from.replace(/\D/g, '');
+      // Normalize the phone number (remove country prefix and non-digits)
+      const normalizedPhone = this.normalizePhone(from);
 
       // Try to find partner by cellphone first
       let partner = await this.partnersService.findByCelular(normalizedPhone);
@@ -449,7 +449,7 @@ export class WhatsAppService {
    * Start the PIN authentication flow: look up user, send PIN request.
    */
   private async startAuthFlow(from: string): Promise<void> {
-    const normalizedPhone = from.replace(/\D/g, '');
+    const normalizedPhone = this.normalizePhone(from);
 
     // Check if phone is registered as a user
     const user = await this.usersService.findByCelular(normalizedPhone);
@@ -493,7 +493,7 @@ export class WhatsAppService {
    * Validate the PIN the user sent.
    */
   private async handlePinInput(from: string, pin: string, session: AuthSession): Promise<void> {
-    const normalizedPhone = from.replace(/\D/g, '');
+    const normalizedPhone = this.normalizePhone(from);
     const MAX_ATTEMPTS = MAX_PIN_ATTEMPTS;
 
     // Validate PIN via UsersService (checks activo + bcrypt compare)
@@ -549,7 +549,7 @@ export class WhatsAppService {
    * Send welcome menu
    */
   private async sendWelcomeMenu(from: string): Promise<void> {
-    const normalizedPhone = from.replace(/\D/g, '');
+    const normalizedPhone = this.normalizePhone(from);
     const partner = await this.partnersService.findByCelular(normalizedPhone);
 
     let greeting = `👋 ¡Hola! Soy el asistente de pagos de *Natillera Chimba Verde*.\n\n`;
@@ -572,7 +572,7 @@ export class WhatsAppService {
    * Send partner info card
    */
   private async sendPartnerInfo(from: string): Promise<void> {
-    const normalizedPhone = from.replace(/\D/g, '');
+    const normalizedPhone = this.normalizePhone(from);
     const partner = await this.partnersService.findByCelular(normalizedPhone);
 
     if (!partner) {
@@ -677,5 +677,20 @@ export class WhatsAppService {
     } catch (error) {
       this.logger.error('Error sending message:', error);
     }
+  }
+
+  /**
+   * Normalize a WhatsApp phone number for DB lookup.
+   * WhatsApp sends numbers with country prefix (e.g. 573108214820).
+   * The DB stores Colombian numbers without the country prefix (e.g. 3108214820).
+   * Strips non-digits, then removes a leading '57' when the result is 12 digits long.
+   */
+  private normalizePhone(from: string): string {
+    const digits = from.replace(/\D/g, '');
+    // Colombian numbers: country code 57 + 10-digit number = 12 digits
+    if (digits.length === 12 && digits.startsWith('57')) {
+      return digits.slice(2);
+    }
+    return digits;
   }
 }
