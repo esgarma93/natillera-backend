@@ -682,14 +682,20 @@ export class WhatsAppService {
   /**
    * Normalize a WhatsApp phone number for DB lookup.
    * WhatsApp sends numbers with country prefix (e.g. 573108214820).
-   * The DB stores Colombian numbers without the country prefix (e.g. 3108214820).
-   * Strips non-digits, then removes a leading '57' when the result is 12 digits long.
+   * The DB stores numbers without the country prefix.
+   * Strips non-digits, then removes the country code based on known patterns:
+   *   - Colombia (+57): 57 + 10 digits = 12 digits → slice(2)
+   *   - USA/Canada (+1): 1 + 10 digits  = 11 digits → slice(1)
    */
   private normalizePhone(from: string): string {
     const digits = from.replace(/\D/g, '');
     // Colombian numbers: country code 57 + 10-digit number = 12 digits
     if (digits.length === 12 && digits.startsWith('57')) {
       return digits.slice(2);
+    }
+    // US/Canada numbers: country code 1 + 10-digit number = 11 digits
+    if (digits.length === 11 && digits.startsWith('1')) {
+      return digits.slice(1);
     }
     return digits;
   }
