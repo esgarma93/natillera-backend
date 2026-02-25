@@ -82,7 +82,6 @@ export class WhatsAppService {
       const message = value.messages[0];
       const contact = value.contacts?.[0];
       const from = message.from; // WhatsApp phone number
-      const messageId = message.id;
 
       this.logger.log(`Received message from ${from}, type: ${message.type}`);
 
@@ -143,9 +142,8 @@ export class WhatsAppService {
         return;
       }
 
-      // Try to extract partner info from caption or contact name
+      // Try to extract partner info from caption
       const raffleNumber = this.extractRaffleNumber(caption);
-      const contactName = contact?.profile?.name || caption.trim() || null;
 
       // Normalize the phone number (remove country prefix and non-digits)
       const normalizedPhone = this.normalizePhone(from);
