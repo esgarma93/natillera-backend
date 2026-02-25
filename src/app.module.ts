@@ -10,9 +10,11 @@ import { VouchersModule } from './vouchers/vouchers.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { RafflesModule } from './raffles/raffles.module';
+import { RedisModule } from './redis/redis.module';
 
 @Module({
   imports: [
+    RedisModule,
     DatabaseModule,
     AuthModule,
     UsersModule,

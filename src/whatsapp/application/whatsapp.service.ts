@@ -3,9 +3,18 @@ import { Cron } from '@nestjs/schedule';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { UsersService } from '../../users/application/users.service';
+import { RedisService } from '../../redis/redis.service';
 import { OcrService } from './ocr.service';
 import { VoucherParserService } from './voucher-parser.service';
 import axios from 'axios';
+
+// Redis key prefixes
+const KEY_WA_AUTH = 'wa:auth:';
+const KEY_WA_PENDING = 'wa:pending:';
+
+// TTLs in seconds
+const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
+const PENDING_SESSION_TTL = 10 * 60;    // 10 minutes
 
 // Pending image session: stored while waiting for raffle number from user
 interface PendingSession {
@@ -14,7 +23,6 @@ interface PendingSession {
   detectedAmount: number | null;
   parsedVoucher: any;
   from: string;
-  timestamp: Date;
 }
 
 // Authentication session per phone number
@@ -22,27 +30,20 @@ interface AuthSession {
   authenticated: boolean;
   attempts: number;       // failed PIN attempts
   waitingForPin: boolean; // true = bot asked for PIN, waiting response
-  expiresAt: Date;        // session expiry (1 hour after last auth)
 }
 
 const MAX_PIN_ATTEMPTS = 3;
-const SESSION_DURATION_MS = 60 * 60 * 1000; // 1 hour
 
 @Injectable()
 export class WhatsAppService {
   private readonly logger = new Logger(WhatsAppService.name);
   private readonly graphApiUrl = 'https://graph.facebook.com/v18.0';
 
-  // In-memory session store: phone → pending session (waiting for raffle number)
-  private readonly pendingSessions = new Map<string, PendingSession>();
-
-  // Auth session store: phone → auth state
-  private readonly authSessions = new Map<string, AuthSession>();
-
   constructor(
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
     private readonly usersService: UsersService,
+    private readonly redisService: RedisService,
     private readonly ocrService: OcrService,
     private readonly voucherParserService: VoucherParserService,
   ) {}
@@ -161,15 +162,14 @@ export class WhatsAppService {
       if (partner) {
         await this.registerPaymentForPartner(from, partner, detectedAmount, parsedVoucher, imageUrl, messageId);
       } else {
-        // Store pending session and ask for raffle number
-        this.pendingSessions.set(from, {
+        // Store pending session in Redis (TTL = 10 minutes, handled by Redis)
+        await this.redisService.set(KEY_WA_PENDING + from, {
           imageUrl,
           messageId,
           detectedAmount,
           parsedVoucher,
           from,
-          timestamp: new Date(),
-        });
+        }, PENDING_SESSION_TTL);
 
         const amountLine = detectedAmount
           ? `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n`
@@ -339,16 +339,13 @@ export class WhatsAppService {
     this.logger.log(`Text message from ${from}: ${text}`);
 
     // ── Check if user has a pending session (sent voucher but partner not found) ──
-    const session = this.pendingSessions.get(from);
+    const session = await this.redisService.get<PendingSession>(KEY_WA_PENDING + from);
     if (session) {
-      // Session expires after 10 minutes
-      const sessionAge = (new Date().getTime() - session.timestamp.getTime()) / 1000 / 60;
-      if (sessionAge > 10) {
-        this.pendingSessions.delete(from);
-      } else {
+      // Redis TTL handles expiry — if the key exists the session is still valid
+      {
         // User may be providing their raffle number or cancelling
         if (textLower === 'cancelar' || textLower === 'cancel') {
-          this.pendingSessions.delete(from);
+          await this.redisService.del(KEY_WA_PENDING + from);
           await this.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
           return;
         }
@@ -411,13 +408,11 @@ export class WhatsAppService {
    * If not authenticated, handles the PIN flow automatically.
    */
   private async checkOrRequestAuth(message: any, from: string): Promise<boolean> {
-    const session = this.authSessions.get(from);
-    const now = new Date();
+    const session = await this.redisService.get<AuthSession>(KEY_WA_AUTH + from);
 
-    // Already authenticated and session not expired
-    if (session?.authenticated && session.expiresAt > now) {
-      // Refresh expiry on activity
-      session.expiresAt = new Date(now.getTime() + SESSION_DURATION_MS);
+    // Already authenticated — refresh TTL (sliding expiry) and proceed
+    if (session?.authenticated) {
+      await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
       return true;
     }
 
@@ -425,22 +420,11 @@ export class WhatsAppService {
     if (session?.waitingForPin && message.type === 'text') {
       const pin = message.text?.body?.trim() ?? '';
       await this.handlePinInput(from, pin, session);
-      return false; // Don't process the PIN text as a normal message
-    }
-
-    // No session or expired — start auth flow
-    if (!session || (!session.waitingForPin && !session.authenticated)) {
-      await this.startAuthFlow(from);
       return false;
     }
 
-    // Expired session that was authenticated → ask again
-    if (session.authenticated && session.expiresAt <= now) {
-      this.authSessions.delete(from);
-      await this.startAuthFlow(from);
-      return false;
-    }
-
+    // No session (expired by Redis TTL or never existed) — start auth flow
+    await this.startAuthFlow(from);
     return false;
   }
 
@@ -473,13 +457,12 @@ export class WhatsAppService {
       return;
     }
 
-    // Register session as waiting for PIN
-    this.authSessions.set(from, {
+    // Store auth session in Redis waiting for PIN (TTL = 10 min)
+    await this.redisService.set(KEY_WA_AUTH + from, {
       authenticated: false,
       waitingForPin: true,
       attempts: 0,
-      expiresAt: new Date(0),
-    });
+    }, PENDING_SESSION_TTL);
 
     await this.sendMessage(
       from,
@@ -501,13 +484,12 @@ export class WhatsAppService {
     const user = await this.usersService.validateUser(normalizedPhone, pin);
 
     if (user) {
-      // Success — mark authenticated
-      this.authSessions.set(from, {
+      // Success — store authenticated session in Redis with 1-hour TTL
+      await this.redisService.set(KEY_WA_AUTH + from, {
         authenticated: true,
         waitingForPin: false,
         attempts: 0,
-        expiresAt: new Date(Date.now() + SESSION_DURATION_MS),
-      });
+      }, AUTH_SESSION_TTL);
 
       const partner = await this.partnersService.findByCelular(normalizedPhone);
       const name = partner?.nombre ?? user.celular;
@@ -522,13 +504,13 @@ export class WhatsAppService {
     } else {
       // Failed attempt
       session.attempts += 1;
-      this.authSessions.set(from, session);
+      await this.redisService.set(KEY_WA_AUTH + from, session, PENDING_SESSION_TTL);
 
       const remaining = MAX_ATTEMPTS - session.attempts;
 
       if (remaining <= 0) {
-        // Too many attempts — lock out and reset
-        this.authSessions.delete(from);
+        // Too many attempts — delete session (lock out)
+        await this.redisService.del(KEY_WA_AUTH + from);
         await this.sendMessage(
           from,
           `� *¡Ay, demasiados intentos fallidos!*\n\n` +
@@ -711,7 +693,7 @@ export class WhatsAppService {
    * Resume a pending session once the raffle number is provided
    */
   private async resumeSessionWithRaffle(from: string, raffleNumber: number, session: PendingSession): Promise<void> {
-    this.pendingSessions.delete(from);
+    await this.redisService.del(KEY_WA_PENDING + from);
 
     const partner = await this.partnersService.findByNumeroRifa(raffleNumber);
 

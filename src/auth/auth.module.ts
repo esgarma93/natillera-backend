@@ -14,7 +14,7 @@ import { PartnersModule } from '../partners/partners.module';
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
       secret: process.env.JWT_SECRET || 'natillera_secret_key_2026',
-      signOptions: { expiresIn: '7d' }, // Token expires in 7 days
+      signOptions: { expiresIn: '1h' }, // Token expires in 1 hour
     }),
   ],
   controllers: [AuthController],
