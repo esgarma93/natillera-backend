@@ -457,7 +457,7 @@ export class WhatsAppService {
     if (!user) {
       await this.sendMessage(
         from,
-        `🌿 *¡Hola! Soy Verdín, tu asistente de Natillera Chimba Verde!* 👋\n\n` +
+        `🌿 *¡Hola! Soy Nacho, tu asistente de Natillera Chimba Verde!* 👋\n\n` +
         `Tu número no está registrado en el sistema todavía. 😅\n\n` +
         `Habla con el administrador para que te registre y puedas disfrutar de todos los beneficios. 🎉`,
       );
@@ -468,7 +468,7 @@ export class WhatsAppService {
       await this.sendMessage(
         from,
         `� *¡Ups! Tu cuenta está desactivada.*\n\n` +
-        `Soy Verdín 🌿 y lamentablemente no puedo ayudarte por ahora.\n\n` +
+        `Soy Nacho 🌿 y lamentablemente no puedo ayudarte por ahora.\n\n` +
         `Contacta al administrador para que reactive tu cuenta.`,
       );
       return;
@@ -484,7 +484,7 @@ export class WhatsAppService {
 
     await this.sendMessage(
       from,
-      `🌿 *¡Hola! Soy Verdín, tu asistente de Natillera Chimba Verde!*\n\n` +
+      `🌿 *¡Hola! Soy Nacho, tu asistente de Natillera Chimba Verde!*\n\n` +
       `Para proteger tu cuenta, necesito verificar tu identidad primero. 🔐\n\n` +
       `Por favor ingresa tu *PIN* de 4 dígitos:\n\n` +
       `_¿Olvidaste tu PIN? Contacta al administrador._`,
@@ -516,7 +516,7 @@ export class WhatsAppService {
       await this.sendMessage(
         from,
         `✅ *¡Bienvenido/a, ${name}!* 🎉\n\n` +
-        `Soy *Verdín* 🌿 y estoy listo para ayudarte.\n\n` +
+        `Soy *Nacho* 🌿 y estoy listo para ayudarte.\n\n` +
         `📸 Envía una foto de tu comprobante para registrar un pago,\n` +
         `o escribe *MENU* para ver todas las opciones.`,
       );
@@ -533,7 +533,7 @@ export class WhatsAppService {
         await this.sendMessage(
           from,
           `� *¡Ay, demasiados intentos fallidos!*\n\n` +
-          `Soy Verdín 🌿 y por tu seguridad he bloqueado el acceso temporalmente.\n\n` +
+          `Soy Nacho 🌿 y por tu seguridad he bloqueado el acceso temporalmente.\n\n` +
           `Contacta al administrador si olvidaste tu PIN.`,
         );
       } else {
@@ -554,7 +554,7 @@ export class WhatsAppService {
     const normalizedPhone = this.normalizePhone(from);
     const partner = await this.partnersService.findByCelular(normalizedPhone);
 
-    let greeting = `🌿 *¡Hola${partner ? `, ${partner.nombre}` : ''}! Soy Verdín, tu asistente de Natillera Chimba Verde* 🎉\n\n`;
+    let greeting = `🌿 *¡Hola${partner ? `, ${partner.nombre}` : ''}! Soy Nacho, tu asistente de Natillera Chimba Verde* 🎉\n\n`;
 
     if (partner) {
       greeting += `Te identifiqué como *${partner.nombre}* 🎰 Rifa #${partner.numeroRifa}\n\n`;
