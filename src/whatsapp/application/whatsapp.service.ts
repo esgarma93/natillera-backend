@@ -179,8 +179,9 @@ export class WhatsAppService {
             amountLine +
             `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n\n` +
             `⚠️ No encontré un socio asociado a tu número *${normalizedPhone}*.\n\n` +
-            `Por favor responde con tu *número de rifa* (ej: *#5* o simplemente *5*) ` +
-            `para completar el registro.\n\n` +
+            `Por favor responde con:\n` +
+            `• Tu *número de rifa* (ej: *#5* o simplemente *5*)\n` +
+            `• O el *celular del socio* (ej: *3108214820*)\n\n` +
             `_Escribe CANCELAR para anular._`,
         );
       }
@@ -367,8 +368,15 @@ export class WhatsAppService {
         return;
       }
 
-      // Plain number without # prefix
-      const directNumber = parseInt(text.replace(/\D/g, ''), 10);
+      // 10-digit number → treat as cellphone lookup
+      const digits = text.replace(/\D/g, '');
+      if (digits.length === 10) {
+        await this.resumeSessionWithCelular(from, digits, pendingSession);
+        return;
+      }
+
+      // Plain short number (1–3 digits) without # prefix → raffle number
+      const directNumber = parseInt(digits, 10);
       if (!isNaN(directNumber) && directNumber > 0 && directNumber < 1000) {
         await this.resumeSessionWithRaffle(from, directNumber, pendingSession);
         return;
@@ -376,9 +384,11 @@ export class WhatsAppService {
 
       await this.sendMessage(
         from,
-        `⚠️ No entendí ese número de rifa.\n\n` +
-        `Por favor responde con tu *número de rifa* (ej: *#5* o simplemente *5*)\n` +
-        `o escribe *CANCELAR* para anular el registro.`,
+        `⚠️ No entendí ese dato.\n\n` +
+        `Por favor responde con:\n` +
+        `• Tu *número de rifa* (ej: *#5* o simplemente *5*)\n` +
+        `• O el *celular del socio* (ej: *3108214820*)\n` +
+        `• O escribe *CANCELAR* para anular.`,
       );
       return;
     }
@@ -680,13 +690,33 @@ export class WhatsAppService {
       await this.sendMessage(
         from,
         `❌ No encontré ningún socio con el número de rifa *#${raffleNumber}*.\n\n` +
-          `Verifica tu número e intenta de nuevo enviando la imagen del comprobante.\n` +
-          `O escribe *MENÚ* para ver las opciones disponibles.`,
+          `Intenta de nuevo con tu *número de rifa* o *celular del socio*,\n` +
+          `o envía la imagen del comprobante nuevamente.`,
       );
       return;
     }
 
-    // Register payment with the found partner
+    await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId);
+  }
+
+  /**
+   * Resume a pending session using the partner's cellphone number
+   */
+  private async resumeSessionWithCelular(from: string, celular: string, session: PendingSession): Promise<void> {
+    await this.redisService.del(KEY_WA_PENDING + from);
+
+    const partner = await this.partnersService.findByCelular(celular);
+
+    if (!partner) {
+      await this.sendMessage(
+        from,
+        `❌ No encontré ningún socio con el celular *${celular}*.\n\n` +
+          `Intenta de nuevo con tu *número de rifa* o *celular del socio*,\n` +
+          `o envía la imagen del comprobante nuevamente.`,
+      );
+      return;
+    }
+
     await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId);
   }
 
