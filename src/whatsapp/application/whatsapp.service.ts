@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { UsersService } from '../../users/application/users.service';
@@ -376,17 +377,8 @@ export class WhatsAppService {
     }
 
     // ── Menu commands ──
-    const isMenuCommand = ['menu', 'menú', 'hola', 'ayuda', 'help', 'inicio', 'start', '1', '2', '3', 'info', 'información', 'mi rifa'].some(
-      (cmd) => textLower === cmd || textLower.startsWith(cmd + ' '),
-    );
-
-    if (textLower === '2' || textLower === 'mi info' || textLower === 'mi información' || textLower === 'info') {
+    if (textLower === 'info' || textLower === 'mi info' || textLower === 'mi información' || textLower === 'información') {
       await this.sendPartnerInfo(from);
-      return;
-    }
-
-    if (isMenuCommand && !['2', 'info', 'información', 'mi rifa'].includes(textLower)) {
-      await this.sendWelcomeMenu(from);
       return;
     }
 
@@ -401,8 +393,15 @@ export class WhatsAppService {
       return;
     }
 
-    // ── Default: send welcome menu ──
-    await this.sendWelcomeMenu(from);
+    // ── Default: guide user ──
+    await this.sendMessage(
+      from,
+      `🌿 *Hola, soy Nacho*\n\n` +
+      `Puedes:\n` +
+      `📸 Enviar una *foto* de tu comprobante (Nequi o Bancolombia) para registrar tu pago\n` +
+      `ℹ️ Escribir *INFO* para ver tu información y estado de pago\n\n` +
+      `_Solo se aceptan comprobantes de Nequi o Bancolombia._`,
+    );
   }
 
   // ─────────────────── AUTH HELPERS ───────────────────
@@ -518,7 +517,7 @@ export class WhatsAppService {
         `✅ *¡Bienvenido/a, ${name}!* 🎉\n\n` +
         `Soy *Nacho* 🌿 y estoy listo para ayudarte.\n\n` +
         `📸 Envía una foto de tu comprobante para registrar un pago,\n` +
-        `o escribe *MENU* para ver todas las opciones.`,
+        `o escribe *INFO* para ver tu información y estado de pago.`,
       );
     } else {
       // Failed attempt
@@ -548,7 +547,7 @@ export class WhatsAppService {
   }
 
   /**
-   * Send welcome menu
+   * Send welcome/help message (used after auth success)
    */
   private async sendWelcomeMenu(from: string): Promise<void> {
     const normalizedPhone = this.normalizePhone(from);
@@ -561,9 +560,8 @@ export class WhatsAppService {
     }
 
     greeting +=
-      `*¿Qué deseas hacer?*\n\n` +
-      `📸 *Registrar pago* → Envía una foto de tu comprobante (Nequi o Bancolombia)\n\n` +
-      `ℹ️ *Ver mi información* → Responde con *INFO*\n\n` +
+      `📸 Envía una *foto* de tu comprobante para registrar tu pago\n` +
+      `ℹ️ Escribe *INFO* para ver tu información y estado de pago\n\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `_Solo se aceptan comprobantes de Nequi o Bancolombia._`;
 
@@ -571,7 +569,7 @@ export class WhatsAppService {
   }
 
   /**
-   * Send partner info card
+   * Send partner info card with payment status and next raffle date
    */
   private async sendPartnerInfo(from: string): Promise<void> {
     const normalizedPhone = this.normalizePhone(from);
@@ -586,6 +584,25 @@ export class WhatsAppService {
       return;
     }
 
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+
+    // Check if partner has paid this month
+    const monthPayments = await this.paymentsService.findByMonthAndYear(currentMonth, currentYear);
+    const currentMonthPayment = monthPayments.find(
+      p => p.partnerId === partner.id && (p.status === 'verified' || p.status === 'pending'),
+    );
+    const paymentStatus = currentMonthPayment
+      ? currentMonthPayment.status === 'verified'
+        ? `✅ *Pagado* (verificado)`
+        : `⏳ *Pendiente de verificación*`
+      : `❌ *No registrado*`;
+
+    // Next raffle date = last Friday of current month
+    const nextRaffleDate = this.getLastFridayOfMonth(currentMonth, currentYear);
+    const nextRaffleDateStr = `${nextRaffleDate.getDate()} de ${this.getMonthName(currentMonth)} de ${currentYear}`;
+
     let infoMsg =
       `👤 *Información de tu cuenta*\n\n` +
       `👤 Nombre: *${partner.nombre}*\n` +
@@ -599,16 +616,90 @@ export class WhatsAppService {
       try {
         const sponsor = await this.partnersService.findById(partner.idPartnerPatrocinador);
         if (sponsor) {
-          infoMsg += `\n🤝 *Patrocinador:* ${sponsor.nombre} (Rifa #${sponsor.numeroRifa})\n`;
+          infoMsg += `🤝 *Patrocinador:* ${sponsor.nombre} (Rifa #${sponsor.numeroRifa})\n`;
         }
       } catch (_) { /* sponsor not found */ }
     }
 
-    const currentMonth = this.getMonthName(new Date().getMonth() + 1);
-    infoMsg += `\n📅 Mes actual: *${currentMonth} ${new Date().getFullYear()}*\n\n` +
-      `📸 Para registrar tu pago, envía una foto de tu comprobante.`;
+    infoMsg +=
+      `\n━━━━━━━━━━━━━━━━━━\n` +
+      `📅 *Mes actual:* ${this.getMonthName(currentMonth)} ${currentYear}\n` +
+      `💳 *Estado de pago:* ${paymentStatus}\n` +
+      `🎲 *Próxima rifa:* ${nextRaffleDateStr}\n` +
+      `━━━━━━━━━━━━━━━━━━\n\n`;
+
+    if (!currentMonthPayment) {
+      infoMsg += `📸 Recuerda enviar tu comprobante antes del *${nextRaffleDateStr}* para participar en la rifa.`;
+    } else {
+      infoMsg += `📸 Para registrar un pago envía una foto de tu comprobante (Nequi o Bancolombia).`;
+    }
 
     await this.sendMessage(from, infoMsg);
+  }
+
+  /**
+   * Returns the last Friday of a given month
+   */
+  private getLastFridayOfMonth(month: number, year: number): Date {
+    const lastDay = new Date(year, month, 0);
+    for (let day = lastDay.getDate(); day >= lastDay.getDate() - 6; day--) {
+      const date = new Date(year, month - 1, day);
+      if (date.getDay() === 5) return date;
+    }
+    return lastDay;
+  }
+
+  /**
+   * Cron: notify unpaid active partners on day 1 and day 5 of each month at 9:00 AM
+   */
+  @Cron('0 9 1,5 * *')
+  async notifyUnpaidPartners(): Promise<void> {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const year = now.getFullYear();
+    const monthName = this.getMonthName(month);
+    const nextRaffleDate = this.getLastFridayOfMonth(month, year);
+    const nextRaffleDateStr = `${nextRaffleDate.getDate()} de ${monthName} de ${year}`;
+
+    this.logger.log(`Running payment reminder cron for ${monthName} ${year}`);
+
+    try {
+      const partners = await this.partnersService.findAll();
+      const activePartners = partners.filter(p => p.activo && p.celular);
+      const payments = await this.paymentsService.findByMonthAndYear(month, year);
+
+      let notified = 0;
+      for (const partner of activePartners) {
+        const hasPaid = payments.some(
+          p => p.partnerId === partner.id && (p.status === 'verified' || p.status === 'pending'),
+        );
+
+        if (!hasPaid) {
+          const whatsappNumber = `57${partner.celular!.replace(/\D/g, '')}`;
+          try {
+            await this.sendMessage(
+              whatsappNumber,
+              `🔔 *Recordatorio de pago - ${monthName} ${year}*\n\n` +
+              `Hola *${partner.nombre}* 👋\n\n` +
+              `Soy Nacho 🌿 y te recuerdo que aún no hemos recibido tu pago de *${monthName} ${year}*.\n\n` +
+              `━━━━━━━━━━━━━━━━━━\n` +
+              `🎰 Tu número de rifa: *#${partner.numeroRifa}*\n` +
+              `💵 Cuota: *$${partner.montoCuota.toLocaleString('es-CO')}*\n` +
+              `📅 Fecha límite: *${nextRaffleDateStr}*\n` +
+              `━━━━━━━━━━━━━━━━━━\n\n` +
+              `📸 Envíame una foto de tu comprobante (Nequi o Bancolombia) para quedar al día. ¡Recuerda que debes pagar para participar en la rifa! 🏆`,
+            );
+            notified++;
+          } catch (err) {
+            this.logger.error(`Failed to send reminder to ${partner.nombre} (${whatsappNumber}):`, err);
+          }
+        }
+      }
+
+      this.logger.log(`Payment reminders sent: ${notified} of ${activePartners.length} active partners`);
+    } catch (error) {
+      this.logger.error('Error running payment reminder cron:', error);
+    }
   }
 
   /**
