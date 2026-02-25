@@ -15,9 +15,11 @@ const KEY_WA_PENDING = 'wa:pending:';
 // TTLs in seconds
 const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
 const PENDING_SESSION_TTL = 10 * 60;    // 10 minutes
+const ADMIN_PHONE = '573122249196';      // Admin notification number
 
 // Pending image session: stored while waiting for raffle number from user
 interface PendingSession {
+  imageId: string;
   imageUrl: string;
   messageId: string;
   detectedAmount: number | null;
@@ -160,10 +162,11 @@ export class WhatsAppService {
       const detectedAmount = parsedVoucher.amount || ocrResult.amount;
 
       if (partner) {
-        await this.registerPaymentForPartner(from, partner, detectedAmount, parsedVoucher, imageUrl, messageId);
+        await this.registerPaymentForPartner(from, partner, detectedAmount, parsedVoucher, imageUrl, imageId, messageId);
       } else {
         // Store pending session in Redis (TTL = 10 minutes, handled by Redis)
         await this.redisService.set(KEY_WA_PENDING + from, {
+          imageId,
           imageUrl,
           messageId,
           detectedAmount,
@@ -207,6 +210,7 @@ export class WhatsAppService {
     detectedAmount: number | null,
     parsedVoucher: any,
     imageUrl: string,
+    imageId: string,
     messageId: string,
   ): Promise<void> {
     const currentMonth = new Date().getMonth() + 1;
@@ -269,6 +273,15 @@ export class WhatsAppService {
         }
 
         await this.sendMessage(from, responseMessage);
+
+        // Forward voucher image to admin
+        const adminCaption =
+          `📥 *Nuevo comprobante*\n` +
+          `👤 ${partner.nombre} (Rifa #${partner.numeroRifa})\n` +
+          `💰 $${detectedAmount.toLocaleString('es-CO')} — ${parsedVoucher.type.toUpperCase()}\n` +
+          `📅 ${this.getMonthName(currentMonth)} ${currentYear}\n` +
+          (validation.issues.length > 0 ? `⚠️ Con observaciones` : `✅ Sin observaciones`);
+        await this.sendImage(ADMIN_PHONE, imageId, adminCaption);
       } catch (paymentError: any) {
         this.logger.error('Error creating payment:', paymentError);
 
@@ -708,12 +721,42 @@ export class WhatsAppService {
     }
 
     // Register payment with the found partner
-    await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.messageId);
+    await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId);
   }
 
   /**
    * Get media URL from WhatsApp
    */
+  /**
+   * Forward an image to a phone number using the WhatsApp media ID
+   */
+  private async sendImage(to: string, mediaId: string, caption?: string): Promise<void> {
+    try {
+      const token = process.env.WHATSAPP_ACCESS_TOKEN;
+      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+      await axios.post(
+        `${this.graphApiUrl}/${phoneNumberId}/messages`,
+        {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'image',
+          image: { id: mediaId, ...(caption ? { caption } : {}) },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      this.logger.log(`Image forwarded to ${to}`);
+    } catch (error) {
+      this.logger.error('Error forwarding image:', error);
+    }
+  }
+
   private async getMediaUrl(mediaId: string): Promise<string | null> {
     try {
       const token = process.env.WHATSAPP_ACCESS_TOKEN;
