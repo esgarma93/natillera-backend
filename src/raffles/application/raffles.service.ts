@@ -224,6 +224,29 @@ export class RafflesService {
       }
     } else {
       this.logger.log(`No winner for ${month}/${year}. Amount remains in natillera: $${remainingAmount.toLocaleString()}`);
+
+      // Notify admin when there's no winner
+      try {
+        const adminWhatsapp = '573122249196';
+        const monthName = this.MONTH_NAMES[month];
+
+        await this.whatsAppService.sendMessage(
+          adminWhatsapp,
+          `😔 *Sin ganador este mes*\n\n` +
+          `Se realizó el sorteo de *${monthName} ${year}* y no hubo ganador.\n\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `🔢 Número Lotería Medellín: *${lotteryNumber}*\n` +
+          `🎰 Últimas dos cifras: *${winningDigits}*\n` +
+          `💰 Monto acumulado: *$${remainingAmount.toLocaleString('es-CO')}*\n` +
+          `━━━━━━━━━━━━━━━━━━\n\n` +
+          `El monto queda acumulado para el próximo mes. 🏦\n\n` +
+          `_— Nacho, asistente de Natillera Chimba Verde 🌿_`,
+        );
+
+        this.logger.log(`No-winner notification sent to admin (${adminWhatsapp})`);
+      } catch (notifyError) {
+        this.logger.error('Failed to send no-winner notification to admin:', notifyError);
+      }
     }
 
     return raffle!;
