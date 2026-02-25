@@ -85,10 +85,6 @@ export class WhatsAppService {
 
       this.logger.log(`Received message from ${from}, type: ${message.type}`);
 
-      // ── Authentication gate ──
-      const isAuthenticated = await this.checkOrRequestAuth(message, from);
-      if (!isAuthenticated) return;
-
       // Handle image messages (payment vouchers)
       if (message.type === 'image') {
         await this.handleImageMessage(message, from, contact);
@@ -349,55 +345,52 @@ export class WhatsAppService {
 
     this.logger.log(`Text message from ${from}: ${text}`);
 
-    // ── Check if user has a pending session (sent voucher but partner not found) ──
-    const session = await this.redisService.get<PendingSession>(KEY_WA_PENDING + from);
-    if (session) {
-      // Redis TTL handles expiry — if the key exists the session is still valid
-      {
-        // User may be providing their raffle number or cancelling
-        if (textLower === 'cancelar' || textLower === 'cancel') {
-          await this.redisService.del(KEY_WA_PENDING + from);
-          await this.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
-          return;
-        }
-
-        const raffleNumber = this.extractRaffleNumber(text);
-        if (raffleNumber !== null) {
-          await this.resumeSessionWithRaffle(from, raffleNumber, session);
-          return;
-        }
-
-        // Might be a number without # prefix
-        const directNumber = parseInt(text.replace(/\D/g, ''), 10);
-        if (!isNaN(directNumber) && directNumber > 0 && directNumber < 1000) {
-          await this.resumeSessionWithRaffle(from, directNumber, session);
-          return;
-        }
-
-        await this.sendMessage(
-          from,
-          `⚠️ No entendí ese número de rifa.\n\n` +
-          `Por favor responde con tu *número de rifa* (ej: *#5* o simplemente *5*)\n` +
-          `o escribe *CANCELAR* para anular el registro.`,
-        );
-        return;
-      }
-    }
-
-    // ── Menu commands ──
-    if (textLower === 'info' || textLower === 'mi info' || textLower === 'mi información' || textLower === 'información') {
-      await this.sendPartnerInfo(from);
+    // ── If the user is mid-PIN-flow, collect their PIN first ──
+    const authSession = await this.redisService.get<AuthSession>(KEY_WA_AUTH + from);
+    if (authSession?.waitingForPin) {
+      await this.handlePinInput(from, text, authSession);
       return;
     }
 
-    // ── Amount confirmation (legacy flow) ──
-    const amount = this.ocrService.parseColombianCurrency(text);
-    if (amount !== null) {
+    // ── Pending voucher session (partner not found, waiting for raffle number) ──
+    const pendingSession = await this.redisService.get<PendingSession>(KEY_WA_PENDING + from);
+    if (pendingSession) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_PENDING + from);
+        await this.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
+        return;
+      }
+
+      const raffleNumber = this.extractRaffleNumber(text);
+      if (raffleNumber !== null) {
+        await this.resumeSessionWithRaffle(from, raffleNumber, pendingSession);
+        return;
+      }
+
+      // Plain number without # prefix
+      const directNumber = parseInt(text.replace(/\D/g, ''), 10);
+      if (!isNaN(directNumber) && directNumber > 0 && directNumber < 1000) {
+        await this.resumeSessionWithRaffle(from, directNumber, pendingSession);
+        return;
+      }
+
       await this.sendMessage(
         from,
-        `✅ Monto confirmado: $${amount.toLocaleString('es-CO')}\n\n` +
-          `Ahora envía la foto del comprobante de pago para completar el registro.`,
+        `⚠️ No entendí ese número de rifa.\n\n` +
+        `Por favor responde con tu *número de rifa* (ej: *#5* o simplemente *5*)\n` +
+        `o escribe *CANCELAR* para anular el registro.`,
       );
+      return;
+    }
+
+    // ── INFO command — requires PIN authentication ──
+    if (textLower === 'info' || textLower === 'mi info' || textLower === 'mi información' || textLower === 'información') {
+      if (authSession?.authenticated) {
+        await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
+        await this.sendPartnerInfo(from);
+      } else {
+        await this.startAuthFlow(from);
+      }
       return;
     }
 
@@ -407,37 +400,12 @@ export class WhatsAppService {
       `🌿 *Hola, soy Nacho*\n\n` +
       `Puedes:\n` +
       `📸 Enviar una *foto* de tu comprobante (Nequi o Bancolombia) para registrar tu pago\n` +
-      `ℹ️ Escribir *INFO* para ver tu información y estado de pago\n\n` +
+      `ℹ️ Escribir *INFO* para ver tu información y estado de pago (requiere PIN)\n\n` +
       `_Solo se aceptan comprobantes de Nequi o Bancolombia._`,
     );
   }
 
   // ─────────────────── AUTH HELPERS ───────────────────
-
-  /**
-   * Main auth gate. Returns true if user is authenticated, false otherwise.
-   * If not authenticated, handles the PIN flow automatically.
-   */
-  private async checkOrRequestAuth(message: any, from: string): Promise<boolean> {
-    const session = await this.redisService.get<AuthSession>(KEY_WA_AUTH + from);
-
-    // Already authenticated — refresh TTL (sliding expiry) and proceed
-    if (session?.authenticated) {
-      await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
-      return true;
-    }
-
-    // Session is waiting for PIN and user sent text
-    if (session?.waitingForPin && message.type === 'text') {
-      const pin = message.text?.body?.trim() ?? '';
-      await this.handlePinInput(from, pin, session);
-      return false;
-    }
-
-    // No session (expired by Redis TTL or never existed) — start auth flow
-    await this.startAuthFlow(from);
-    return false;
-  }
 
   /**
    * Start the PIN authentication flow: look up user, send PIN request.
