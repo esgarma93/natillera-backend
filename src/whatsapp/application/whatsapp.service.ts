@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
+import { UsersService } from '../../users/application/users.service';
 import { OcrService } from './ocr.service';
 import { VoucherParserService } from './voucher-parser.service';
 import axios from 'axios';
@@ -15,6 +16,17 @@ interface PendingSession {
   timestamp: Date;
 }
 
+// Authentication session per phone number
+interface AuthSession {
+  authenticated: boolean;
+  attempts: number;       // failed PIN attempts
+  waitingForPin: boolean; // true = bot asked for PIN, waiting response
+  expiresAt: Date;        // session expiry (1 hour after last auth)
+}
+
+const MAX_PIN_ATTEMPTS = 3;
+const SESSION_DURATION_MS = 60 * 60 * 1000; // 1 hour
+
 @Injectable()
 export class WhatsAppService {
   private readonly logger = new Logger(WhatsAppService.name);
@@ -23,9 +35,13 @@ export class WhatsAppService {
   // In-memory session store: phone → pending session (waiting for raffle number)
   private readonly pendingSessions = new Map<string, PendingSession>();
 
+  // Auth session store: phone → auth state
+  private readonly authSessions = new Map<string, AuthSession>();
+
   constructor(
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
+    private readonly usersService: UsersService,
     private readonly ocrService: OcrService,
     private readonly voucherParserService: VoucherParserService,
   ) {}
@@ -65,6 +81,10 @@ export class WhatsAppService {
       const messageId = message.id;
 
       this.logger.log(`Received message from ${from}, type: ${message.type}`);
+
+      // ── Authentication gate ──
+      const isAuthenticated = await this.checkOrRequestAuth(message, from);
+      if (!isAuthenticated) return;
 
       // Handle image messages (payment vouchers)
       if (message.type === 'image') {
@@ -383,6 +403,146 @@ export class WhatsAppService {
 
     // ── Default: send welcome menu ──
     await this.sendWelcomeMenu(from);
+  }
+
+  // ─────────────────── AUTH HELPERS ───────────────────
+
+  /**
+   * Main auth gate. Returns true if user is authenticated, false otherwise.
+   * If not authenticated, handles the PIN flow automatically.
+   */
+  private async checkOrRequestAuth(message: any, from: string): Promise<boolean> {
+    const session = this.authSessions.get(from);
+    const now = new Date();
+
+    // Already authenticated and session not expired
+    if (session?.authenticated && session.expiresAt > now) {
+      // Refresh expiry on activity
+      session.expiresAt = new Date(now.getTime() + SESSION_DURATION_MS);
+      return true;
+    }
+
+    // Session is waiting for PIN and user sent text
+    if (session?.waitingForPin && message.type === 'text') {
+      const pin = message.text?.body?.trim() ?? '';
+      await this.handlePinInput(from, pin, session);
+      return false; // Don't process the PIN text as a normal message
+    }
+
+    // No session or expired — start auth flow
+    if (!session || (!session.waitingForPin && !session.authenticated)) {
+      await this.startAuthFlow(from);
+      return false;
+    }
+
+    // Expired session that was authenticated → ask again
+    if (session.authenticated && session.expiresAt <= now) {
+      this.authSessions.delete(from);
+      await this.startAuthFlow(from);
+      return false;
+    }
+
+    return false;
+  }
+
+  /**
+   * Start the PIN authentication flow: look up user, send PIN request.
+   */
+  private async startAuthFlow(from: string): Promise<void> {
+    const normalizedPhone = from.replace(/\D/g, '');
+
+    // Check if phone is registered as a user
+    const user = await this.usersService.findByCelular(normalizedPhone);
+
+    if (!user) {
+      await this.sendMessage(
+        from,
+        `🔒 *Acceso restringido*\n\n` +
+        `Tu número no está registrado en el sistema de *Natillera Chimba Verde*.\n\n` +
+        `Por favor contacta al administrador para obtener acceso.`,
+      );
+      return;
+    }
+
+    if (!user.activo) {
+      await this.sendMessage(
+        from,
+        `🚫 *Cuenta desactivada*\n\n` +
+        `Tu cuenta ha sido desactivada. Por favor contacta al administrador.`,
+      );
+      return;
+    }
+
+    // Register session as waiting for PIN
+    this.authSessions.set(from, {
+      authenticated: false,
+      waitingForPin: true,
+      attempts: 0,
+      expiresAt: new Date(0),
+    });
+
+    await this.sendMessage(
+      from,
+      `🔐 *Verificación de identidad*\n\n` +
+      `Por favor ingresa tu *PIN* de 4 dígitos para continuar.\n\n` +
+      `_Si no recuerdas tu PIN contacta al administrador._`,
+    );
+  }
+
+  /**
+   * Validate the PIN the user sent.
+   */
+  private async handlePinInput(from: string, pin: string, session: AuthSession): Promise<void> {
+    const normalizedPhone = from.replace(/\D/g, '');
+    const MAX_ATTEMPTS = MAX_PIN_ATTEMPTS;
+
+    // Validate PIN via UsersService (checks activo + bcrypt compare)
+    const user = await this.usersService.validateUser(normalizedPhone, pin);
+
+    if (user) {
+      // Success — mark authenticated
+      this.authSessions.set(from, {
+        authenticated: true,
+        waitingForPin: false,
+        attempts: 0,
+        expiresAt: new Date(Date.now() + SESSION_DURATION_MS),
+      });
+
+      const partner = await this.partnersService.findByCelular(normalizedPhone);
+      const name = partner?.nombre ?? user.celular;
+
+      await this.sendMessage(
+        from,
+        `✅ *¡Bienvenido/a, ${name}!*\n\n` +
+        `Tu identidad ha sido verificada. 🎉\n\n` +
+        `Envía una foto de tu comprobante para registrar un pago,\n` +
+        `o escribe *MENU* para ver las opciones disponibles.`,
+      );
+    } else {
+      // Failed attempt
+      session.attempts += 1;
+      this.authSessions.set(from, session);
+
+      const remaining = MAX_ATTEMPTS - session.attempts;
+
+      if (remaining <= 0) {
+        // Too many attempts — lock out and reset
+        this.authSessions.delete(from);
+        await this.sendMessage(
+          from,
+          `🚫 *Demasiados intentos fallidos.*\n\n` +
+          `Por seguridad, debes esperar antes de intentar de nuevo.\n` +
+          `Contacta al administrador si olvidaste tu PIN.`,
+        );
+      } else {
+        await this.sendMessage(
+          from,
+          `❌ *PIN incorrecto.*\n\n` +
+          `Te quedan *${remaining}* intento${remaining === 1 ? '' : 's'}.\n\n` +
+          `Ingresa tu PIN de 4 dígitos:`,
+        );
+      }
+    }
   }
 
   /**
