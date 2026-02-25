@@ -628,8 +628,13 @@ export class WhatsAppService {
       `🎲 *Próxima rifa:* ${nextRaffleDateStr}\n` +
       `━━━━━━━━━━━━━━━━━━\n\n`;
 
+    // Payment deadline = 5th of next month
+    const deadlineMonth = currentMonth === 12 ? 1 : currentMonth + 1;
+    const deadlineYear = currentMonth === 12 ? currentYear + 1 : currentYear;
+    const deadlineDateStr = `5 de ${this.getMonthName(deadlineMonth)} de ${deadlineYear}`;
+
     if (!currentMonthPayment) {
-      infoMsg += `📸 Recuerda enviar tu comprobante antes del *${nextRaffleDateStr}* para participar en la rifa.`;
+      infoMsg += `📸 Recuerda enviar tu comprobante antes del *${deadlineDateStr}* para participar en la rifa.`;
     } else {
       infoMsg += `📸 Para registrar un pago envía una foto de tu comprobante (Nequi o Bancolombia).`;
     }
