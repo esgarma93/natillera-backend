@@ -15,7 +15,8 @@ const KEY_WA_PENDING = 'wa:pending:';
 // TTLs in seconds
 const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
 const PENDING_SESSION_TTL = 10 * 60;    // 10 minutes
-const ADMIN_PHONE = '573122249196';      // Admin notification number
+// Admin phones read from WHATSAPP_NOTIFICATION_PHONES env var (comma-separated, e.g. "573122249196,573001234567")
+// Falls back to a single number if the legacy ADMIN_PHONE env var is set, or empty list if neither is defined.
 
 // Pending image session: stored while waiting for raffle number from user
 interface PendingSession {
@@ -276,7 +277,7 @@ export class WhatsAppService {
           `💰 $${detectedAmount.toLocaleString('es-CO')} — ${parsedVoucher.type.toUpperCase()}\n` +
           `📅 ${this.getMonthName(currentMonth)} ${currentYear}\n` +
           (validation.issues.length > 0 ? `⚠️ Con observaciones` : `✅ Sin observaciones`);
-        await this.sendImage(ADMIN_PHONE, imageId, adminCaption);
+        await this.forwardImageToAdmins(imageId, adminCaption);
       } catch (paymentError: any) {
         this.logger.error('Error creating payment:', paymentError);
 
@@ -750,6 +751,66 @@ export class WhatsAppService {
       this.logger.log(`Image forwarded to ${to}`);
     } catch (error) {
       this.logger.error('Error forwarding image:', error);
+    }
+  }
+
+  /**
+   * Return the list of admin phone numbers from the env var.
+   * WHATSAPP_NOTIFICATION_PHONES should be a comma-separated list of E.164 numbers without the '+' sign.
+   * Example: "573122249196,573001234567"
+   */
+  private getAdminPhones(): string[] {
+    const raw = process.env.WHATSAPP_NOTIFICATION_PHONES || '';
+    return raw.split(',').map(p => p.trim()).filter(p => p.length > 0);
+  }
+
+  /**
+   * Forward a WhatsApp-hosted image (by mediaId) to all admin phones.
+   */
+  async forwardImageToAdmins(mediaId: string, caption?: string): Promise<void> {
+    const phones = this.getAdminPhones();
+    if (phones.length === 0) {
+      this.logger.warn('No admin phones configured in WHATSAPP_NOTIFICATION_PHONES — skipping forward');
+      return;
+    }
+    await Promise.all(phones.map(phone => this.sendImage(phone, mediaId, caption)));
+  }
+
+  /**
+   * Upload a base64 image to WhatsApp's media API and return the resulting mediaId.
+   * Supports data URIs (data:image/jpeg;base64,...) or raw base64 strings.
+   * Returns null on failure so callers can gracefully skip forwarding.
+   */
+  async uploadMediaFromBase64(imageBase64: string): Promise<string | null> {
+    try {
+      const token = process.env.WHATSAPP_ACCESS_TOKEN;
+      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+      // Strip data URI prefix if present
+      const isPng = imageBase64.startsWith('data:image/png');
+      const mimeType = isPng ? 'image/png' : 'image/jpeg';
+      const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      // Build multipart form using native Node 18 globals
+      const blob = new Blob([buffer], { type: mimeType });
+      const form = new FormData();
+      form.append('messaging_product', 'whatsapp');
+      form.append('type', mimeType);
+      form.append('file', blob, 'voucher.jpg');
+
+      const response = await axios.post(
+        `${this.graphApiUrl}/${phoneNumberId}/media`,
+        form,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      const mediaId = response.data?.id;
+      this.logger.log(`Uploaded media to WhatsApp, mediaId: ${mediaId}`);
+      return mediaId || null;
+    } catch (error) {
+      this.logger.error('Error uploading media to WhatsApp:', error);
+      return null;
     }
   }
 

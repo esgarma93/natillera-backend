@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { OcrService } from '../../whatsapp/application/ocr.service';
 import { VoucherParserService } from '../../whatsapp/application/voucher-parser.service';
+import { WhatsAppService } from '../../whatsapp/application/whatsapp.service';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { ProcessVoucherDto } from './dto/process-voucher.dto';
@@ -13,6 +14,7 @@ export class VouchersService {
   constructor(
     private readonly ocrService: OcrService,
     private readonly voucherParserService: VoucherParserService,
+    private readonly whatsappService: WhatsAppService,
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
   ) {}
@@ -191,6 +193,25 @@ export class VouchersService {
       );
 
       this.logger.log(`Payment created for partner: ${partner.nombre}, amount: ${partner.montoCuota}, status: ${payment.status}`);
+
+      // Forward voucher image to admin phones (fire-and-forget)
+      try {
+        const mediaId = await this.whatsappService.uploadMediaFromBase64(dto.imageBase64);
+        if (mediaId) {
+          const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+          const monthName = months[(dto.month || new Date().getMonth() + 1) - 1];
+          const yr = dto.year || new Date().getFullYear();
+          const caption =
+            `📥 *Nuevo comprobante (Portal)*\n` +
+            `👤 ${partner.nombre} (Rifa #${partner.numeroRifa})\n` +
+            `💰 $${detectedAmount.toLocaleString('es-CO')} — ${parsedVoucher.type.toUpperCase()}\n` +
+            `📅 ${monthName} ${yr}\n` +
+            (validation.issues.length > 0 ? `⚠️ Con observaciones` : `✅ Sin observaciones`);
+          await this.whatsappService.forwardImageToAdmins(mediaId, caption);
+        }
+      } catch (fwdErr) {
+        this.logger.error('Error forwarding voucher image to admins:', fwdErr);
+      }
 
       const result: any = {
         success: true,
