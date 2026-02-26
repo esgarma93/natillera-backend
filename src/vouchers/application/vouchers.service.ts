@@ -201,12 +201,23 @@ export class VouchersService {
           const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
           const monthName = months[(dto.month || new Date().getMonth() + 1) - 1];
           const yr = dto.year || new Date().getFullYear();
+          const sponsoredLine = sponsoredPartners.length > 0
+            ? `🫂 Patrocinados: ${sponsoredPartners.map(p => `*${p.nombre}* (#${p.numeroRifa})`).join(', ')}\n`
+            : '';
+          const statusLine = validation.issues.length > 0
+            ? `💳 Estado: *PENDIENTE DE REVISIÓN*\n`
+            : `💳 Estado: *Pendiente de verificación*\n`;
           const caption =
-            `📥 *Nuevo comprobante (Portal)*\n` +
-            `👤 ${partner.nombre} (Rifa #${partner.numeroRifa})\n` +
-            `💰 $${detectedAmount.toLocaleString('es-CO')} — ${parsedVoucher.type.toUpperCase()}\n` +
-            `📅 ${monthName} ${yr}\n` +
-            (validation.issues.length > 0 ? `⚠️ Con observaciones` : `✅ Sin observaciones`);
+            `📥 *Nuevo comprobante Portal*\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
+            `💰 Monto: *$${detectedAmount.toLocaleString('es-CO')}* — ${parsedVoucher.type.toUpperCase()}\n` +
+            `📅 Mes: *${monthName} ${yr}*\n` +
+            statusLine +
+            sponsoredLine +
+            (validation.issues.length > 0
+              ? `━━━━━━━━━━━━━━━━━━\n⚠️ ${validation.issues.map((i) => `• ${i}`).join('\n⚠️ ')}`
+              : `━━━━━━━━━━━━━━━━━━`);
           await this.whatsappService.forwardImageToAdmins(mediaId, caption);
         }
       } catch (fwdErr) {

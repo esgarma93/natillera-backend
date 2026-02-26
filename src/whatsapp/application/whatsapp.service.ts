@@ -271,12 +271,25 @@ export class WhatsAppService {
         await this.sendMessage(from, responseMessage);
 
         // Forward voucher image to admin
+        const allPartners = await this.partnersService.findAll();
+        const sponsoredByPartner = allPartners.filter(p => p.idPartnerPatrocinador === partner.id && p.activo);
+        const sponsoredLine = sponsoredByPartner.length > 0
+          ? `🫂 Patrocinados: ${sponsoredByPartner.map(p => `*${p.nombre}* (#${p.numeroRifa})`).join(', ')}\n`
+          : '';
+        const statusLine = validation.issues.length > 0
+          ? `💳 Estado: *PENDIENTE DE REVISIÓN*\n`
+          : `💳 Estado: *Pendiente de verificación*\n`;
         const adminCaption =
-          `📥 *Nuevo comprobante*\n` +
-          `👤 ${partner.nombre} (Rifa #${partner.numeroRifa})\n` +
-          `💰 $${detectedAmount.toLocaleString('es-CO')} — ${parsedVoucher.type.toUpperCase()}\n` +
-          `📅 ${this.getMonthName(currentMonth)} ${currentYear}\n` +
-          (validation.issues.length > 0 ? `⚠️ Con observaciones` : `✅ Sin observaciones`);
+          `📥 *Nuevo comprobante WhatsApp*\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
+          `💰 Monto: *$${detectedAmount.toLocaleString('es-CO')}* — ${parsedVoucher.type.toUpperCase()}\n` +
+          `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
+          statusLine +
+          sponsoredLine +
+          (validation.issues.length > 0
+            ? `━━━━━━━━━━━━━━━━━━\n⚠️ ${validation.issues.map((i) => `• ${i}`).join('\n⚠️ ')}`
+            : `━━━━━━━━━━━━━━━━━━`);
         await this.forwardImageToAdmins(imageId, adminCaption);
       } catch (paymentError: any) {
         this.logger.error('Error creating payment:', paymentError);
