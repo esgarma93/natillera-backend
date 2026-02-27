@@ -232,6 +232,54 @@ export class PaymentsService {
     return this.toResponseDto(created);
   }
 
+  /**
+   * Find an existing payment for a partner in a given month/year.
+   * Returns null if none exists.
+   */
+  async findExistingPayment(partnerId: string, month: number, year: number): Promise<PaymentResponseDto | null> {
+    const activePeriod = await this.periodsService.getActivePeriod();
+    const existing = await this.paymentRepository.findByPartnerPeriodAndMonth(
+      partnerId,
+      activePeriod.id!,
+      month,
+    );
+    return existing ? this.toResponseDto(existing) : null;
+  }
+
+  /**
+   * Accumulate a partial payment: adds additionalAmount to an existing payment.
+   * If the new total >= expectedAmount, marks the payment PENDING for admin verification.
+   */
+  async accumulatePartialPayment(
+    existingPaymentId: string,
+    additionalAmount: number,
+  ): Promise<PaymentResponseDto> {
+    const existing = await this.paymentRepository.findById(existingPaymentId);
+    if (!existing) {
+      throw new NotFoundException(`Payment with ID ${existingPaymentId} not found`);
+    }
+
+    const newAmount = existing.amount + additionalAmount;
+    const newDifference = newAmount - existing.expectedAmount;
+
+    const complementNote = `Pago complementario: +$${additionalAmount.toLocaleString('es-CO')}`;
+    const notes = existing.notes ? `${existing.notes} | ${complementNote}` : complementNote;
+
+    const pendingDescription = newDifference >= 0
+      ? 'Pago acumulado de múltiples comprobantes — verificar manualmente'
+      : existing.pendingDescription;
+
+    const updated = await this.paymentRepository.update(existingPaymentId, {
+      amount: newAmount,
+      difference: newDifference,
+      status: PaymentStatus.PENDING,
+      pendingDescription,
+      notes,
+    });
+
+    return this.toResponseDto(updated);
+  }
+
   async update(id: string, updatePaymentDto: UpdatePaymentDto): Promise<PaymentResponseDto> {
     const existing = await this.paymentRepository.findById(id);
     if (!existing) {

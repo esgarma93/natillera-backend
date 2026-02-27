@@ -11,6 +11,7 @@ import axios from 'axios';
 // Redis key prefixes
 const KEY_WA_AUTH = 'wa:auth:';
 const KEY_WA_PENDING = 'wa:pending:';
+const KEY_WA_SPONSOR = 'wa:sponsor:';
 
 // TTLs in seconds
 const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
@@ -26,6 +27,25 @@ interface PendingSession {
   detectedAmount: number | null;
   parsedVoucher: any;
   from: string;
+}
+
+// Pending sponsor choice: stored while waiting for user to confirm sponsored partner
+interface PendingSponsorChoice {
+  imageId: string;
+  imageUrl: string;
+  messageId: string;
+  detectedAmount: number;
+  parsedVoucher: any;
+  from: string;
+  originalPartnerId: string;
+  originalPartnerName: string;
+  originalPartnerMontoCuota: number;
+  sponsoredOptions: Array<{
+    id: string;
+    nombre: string;
+    numeroRifa: number;
+    montoCuota: number;
+  }>;
 }
 
 // Authentication session per phone number
@@ -208,6 +228,7 @@ export class WhatsAppService {
     imageUrl: string,
     imageId: string,
     messageId: string,
+    skipSponsorCheck: boolean = false,
   ): Promise<void> {
     const currentMonth = new Date().getMonth() + 1;
     const currentYear = new Date().getFullYear();
@@ -224,6 +245,127 @@ export class WhatsAppService {
     }
 
     if (detectedAmount !== null) {
+      // ── Sponsored partner detection ──
+      if (!skipSponsorCheck && detectedAmount !== partner.montoCuota) {
+        const allPartners = await this.partnersService.findAll();
+        const sponsoredPartners = allPartners.filter(
+          p => p.idPartnerPatrocinador === partner.id && p.activo,
+        );
+        const matchingSponsored = sponsoredPartners.filter(
+          p => p.montoCuota === detectedAmount,
+        );
+
+        if (matchingSponsored.length > 0) {
+          await this.redisService.set(KEY_WA_SPONSOR + from, {
+            imageId, imageUrl, messageId, detectedAmount, parsedVoucher, from,
+            originalPartnerId: partner.id,
+            originalPartnerName: partner.nombre,
+            originalPartnerMontoCuota: partner.montoCuota,
+            sponsoredOptions: matchingSponsored.map(p => ({
+              id: p.id, nombre: p.nombre, numeroRifa: p.numeroRifa, montoCuota: p.montoCuota,
+            })),
+          } as PendingSponsorChoice, PENDING_SESSION_TTL);
+
+          if (matchingSponsored.length === 1) {
+            const sp = matchingSponsored[0];
+            await this.sendMessage(from,
+              `🤔 *El monto no coincide con tu cuota*\n\n` +
+              `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
+              `💵 Tu cuota: *$${partner.montoCuota.toLocaleString('es-CO')}*\n\n` +
+              `Pero coincide con la cuota de tu patrocinado:\n` +
+              `👤 *${sp.nombre}* (Rifa #${sp.numeroRifa}) — $${sp.montoCuota.toLocaleString('es-CO')}\n\n` +
+              `¿Este pago es para *${sp.nombre}*?\n` +
+              `Responde *SÍ* o *NO*\n\n` +
+              `_Escribe CANCELAR para anular._`,
+            );
+          } else {
+            let msg =
+              `🤔 *El monto no coincide con tu cuota*\n\n` +
+              `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
+              `💵 Tu cuota: *$${partner.montoCuota.toLocaleString('es-CO')}*\n\n` +
+              `Pero coincide con la cuota de estos patrocinados:\n\n`;
+            matchingSponsored.forEach((sp, i) => {
+              msg += `${i + 1}️⃣ *${sp.nombre}* (Rifa #${sp.numeroRifa}) — $${sp.montoCuota.toLocaleString('es-CO')}\n`;
+            });
+            msg += `\n¿Para quién es este pago?\n` +
+              `Responde con el *número* (1, 2...) o *NO* si es para ti.\n\n` +
+              `_Escribe CANCELAR para anular._`;
+            await this.sendMessage(from, msg);
+          }
+          return;
+        }
+      }
+
+      // ── Partial payment accumulation ──
+      try {
+        const existingPayment = await this.paymentsService.findExistingPayment(
+          partner.id, currentMonth, currentYear,
+        );
+
+        if (existingPayment) {
+          if (existingPayment.amount < existingPayment.expectedAmount) {
+            await this.paymentsService.accumulatePartialPayment(
+              existingPayment.id, detectedAmount,
+            );
+
+            const newTotal = existingPayment.amount + detectedAmount;
+            const covered = newTotal >= existingPayment.expectedAmount;
+
+            let msg =
+              `📸 *¡Comprobante complementario recibido!*\n\n` +
+              `━━━━━━━━━━━━━━━━━━\n` +
+              `👤 Socio: *${partner.nombre}*\n` +
+              `🎰 Rifa: *#${partner.numeroRifa}*\n` +
+              sponsorLine +
+              `💰 Pago anterior: *$${existingPayment.amount.toLocaleString('es-CO')}*\n` +
+              `💰 Este comprobante: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
+              `💰 Total acumulado: *$${newTotal.toLocaleString('es-CO')}*\n` +
+              `💵 Cuota esperada: *$${existingPayment.expectedAmount.toLocaleString('es-CO')}*\n` +
+              `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
+              `━━━━━━━━━━━━━━━━━━\n\n`;
+
+            if (covered) {
+              msg += `✅ *¡Pago completado!*\nSe acumularon ambos comprobantes exitosamente.\nSerá verificado pronto por el administrador.`;
+            } else {
+              const remaining = existingPayment.expectedAmount - newTotal;
+              msg += `⚠️ *Pago parcial acumulado.*\nFaltan *$${remaining.toLocaleString('es-CO')}* para completar la cuota.`;
+            }
+
+            await this.sendMessage(from, msg);
+
+            // Forward to admin
+            const allPartners2 = await this.partnersService.findAll();
+            const sponsoredByPartner2 = allPartners2.filter(p => p.idPartnerPatrocinador === partner.id && p.activo);
+            const sponsoredLine2 = sponsoredByPartner2.length > 0
+              ? `🫂 Patrocinados: ${sponsoredByPartner2.map(p => `*${p.nombre}* (#${p.numeroRifa})`).join(', ')}\n`
+              : '';
+            const adminCaption =
+              `📥 *Comprobante complementario WhatsApp*\n` +
+              `━━━━━━━━━━━━━━━━━━\n` +
+              `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
+              `💰 Anterior: $${existingPayment.amount.toLocaleString('es-CO')} + Nuevo: $${detectedAmount.toLocaleString('es-CO')} = *$${newTotal.toLocaleString('es-CO')}*\n` +
+              `💵 Cuota: $${existingPayment.expectedAmount.toLocaleString('es-CO')}\n` +
+              `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
+              `💳 Estado: *${covered ? 'Cuota completada' : 'Aún parcial'}*\n` +
+              sponsoredLine2 +
+              `━━━━━━━━━━━━━━━━━━`;
+            await this.forwardImageToAdmins(imageId, adminCaption);
+            return;
+          } else {
+            await this.sendMessage(
+              from,
+              `⚠️ Ya existe un pago registrado para *${partner.nombre}* en *${this.getMonthName(currentMonth)} ${currentYear}* ` +
+              `por *$${existingPayment.amount.toLocaleString('es-CO')}*.\n\n` +
+              `Si crees que esto es un error, contacta al administrador.`,
+            );
+            return;
+          }
+        }
+      } catch (checkErr) {
+        this.logger.warn('Error checking existing payment for accumulation:', checkErr);
+      }
+
+      // ── Create new payment ──
       try {
         const validation = this.voucherParserService.validatePaymentVoucher(
           parsedVoucher,
@@ -364,6 +506,18 @@ export class WhatsAppService {
     const authSession = await this.redisService.get<AuthSession>(KEY_WA_AUTH + from);
     if (authSession?.waitingForPin) {
       await this.handlePinInput(from, text, authSession);
+      return;
+    }
+
+    // ── Pending sponsor choice (waiting for SÍ/NO or partner number) ──
+    const sponsorChoice = await this.redisService.get<PendingSponsorChoice>(KEY_WA_SPONSOR + from);
+    if (sponsorChoice) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_SPONSOR + from);
+        await this.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
+        return;
+      }
+      await this.handleSponsorChoice(from, text, sponsorChoice);
       return;
     }
 
@@ -732,6 +886,78 @@ export class WhatsAppService {
     }
 
     await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId);
+  }
+
+  /**
+   * Handle the user's response when asked whether a payment is for a sponsored partner.
+   */
+  private async handleSponsorChoice(from: string, text: string, choice: PendingSponsorChoice): Promise<void> {
+    const textLower = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+    if (choice.sponsoredOptions.length === 1) {
+      // Single sponsored option → SÍ / NO
+      if (textLower === 'si' || textLower === 'sí' || textLower === 'yes' || textLower === '1') {
+        await this.redisService.del(KEY_WA_SPONSOR + from);
+        const sponsored = choice.sponsoredOptions[0];
+        const partner = await this.partnersService.findById(sponsored.id);
+        if (partner) {
+          await this.registerPaymentForPartner(
+            from, partner, choice.detectedAmount, choice.parsedVoucher,
+            choice.imageUrl, choice.imageId, choice.messageId, true,
+          );
+        }
+      } else if (textLower === 'no' || textLower === '2') {
+        await this.redisService.del(KEY_WA_SPONSOR + from);
+        const partner = await this.partnersService.findById(choice.originalPartnerId);
+        if (partner) {
+          await this.registerPaymentForPartner(
+            from, partner, choice.detectedAmount, choice.parsedVoucher,
+            choice.imageUrl, choice.imageId, choice.messageId, true,
+          );
+        }
+      } else {
+        // Didn't understand — ask again (keep session alive)
+        await this.sendMessage(from,
+          `⚠️ No entendí tu respuesta.\n\n` +
+          `Responde *SÍ* para registrar el pago a nombre de *${choice.sponsoredOptions[0].nombre}*,\n` +
+          `o *NO* para registrarlo a tu nombre (*${choice.originalPartnerName}*).\n\n` +
+          `_Escribe CANCELAR para anular._`,
+        );
+      }
+    } else {
+      // Multiple sponsored options → pick by number or NO
+      if (textLower === 'no') {
+        await this.redisService.del(KEY_WA_SPONSOR + from);
+        const partner = await this.partnersService.findById(choice.originalPartnerId);
+        if (partner) {
+          await this.registerPaymentForPartner(
+            from, partner, choice.detectedAmount, choice.parsedVoucher,
+            choice.imageUrl, choice.imageId, choice.messageId, true,
+          );
+        }
+      } else {
+        const num = parseInt(text.replace(/\D/g, ''), 10);
+        if (num >= 1 && num <= choice.sponsoredOptions.length) {
+          await this.redisService.del(KEY_WA_SPONSOR + from);
+          const sponsored = choice.sponsoredOptions[num - 1];
+          const partner = await this.partnersService.findById(sponsored.id);
+          if (partner) {
+            await this.registerPaymentForPartner(
+              from, partner, choice.detectedAmount, choice.parsedVoucher,
+              choice.imageUrl, choice.imageId, choice.messageId, true,
+            );
+          }
+        } else {
+          // Didn't understand
+          await this.sendMessage(from,
+            `⚠️ No entendí tu respuesta.\n\n` +
+            `Responde con el *número* del patrocinado (1-${choice.sponsoredOptions.length}),\n` +
+            `o *NO* para registrar el pago a tu nombre (*${choice.originalPartnerName}*).\n\n` +
+            `_Escribe CANCELAR para anular._`,
+          );
+        }
+      }
+    }
   }
 
   /**
