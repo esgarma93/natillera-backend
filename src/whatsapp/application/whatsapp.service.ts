@@ -925,7 +925,20 @@ export class WhatsAppService {
         this.logger.warn('Could not fetch sponsored partners for admin caption:', partnerErr);
       }
 
-      await this.forwardImageToAdmins(imageId, caption);
+      // Truncate caption to WhatsApp max (1024 chars)
+      if (caption.length > 1024) {
+        caption = caption.slice(0, 1021) + '...';
+        this.logger.warn(`Admin caption truncated to 1024 chars for ${partner.nombre}`);
+      }
+
+      // Re-upload the received media so we get a send-ready media ID
+      const sendMediaId = await this.reuploadMedia(imageId);
+      if (!sendMediaId) {
+        this.logger.error(`Could not re-upload media for admin notification (original ID: ${imageId})`);
+        return;
+      }
+
+      await this.forwardImageToAdmins(sendMediaId, caption);
       this.logger.log(`Admin notification sent for ${partner.nombre} (Rifa #${partner.numeroRifa})`);
     } catch (notifyErr) {
       this.logger.error('Failed to notify admins with voucher image:', notifyErr);
@@ -1015,7 +1028,7 @@ export class WhatsAppService {
       const token = process.env.WHATSAPP_ACCESS_TOKEN;
       const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
-      await axios.post(
+      const response = await axios.post(
         `${this.graphApiUrl}/${phoneNumberId}/messages`,
         {
           messaging_product: 'whatsapp',
@@ -1031,9 +1044,11 @@ export class WhatsAppService {
         },
       );
 
-      this.logger.log(`Image forwarded to ${to}`);
-    } catch (error) {
-      this.logger.error('Error forwarding image:', error);
+      const waMessageId = response.data?.messages?.[0]?.id || 'unknown';
+      this.logger.log(`Image forwarded to ${to} — WA msg ID: ${waMessageId}`);
+    } catch (error: any) {
+      const errData = error?.response?.data || error?.message || error;
+      this.logger.error(`Error forwarding image to ${to}:`, JSON.stringify(errData));
     }
   }
 
@@ -1108,6 +1123,57 @@ export class WhatsAppService {
       return response.data?.url || null;
     } catch (error) {
       this.logger.error('Error getting media URL:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Download a received WhatsApp media by its ID and re-upload it to get
+   * a media ID that is usable for sending outbound messages.
+   * Incoming media IDs are only guaranteed for downloading; to forward
+   * to other users we need a freshly uploaded media ID.
+   */
+  private async reuploadMedia(mediaId: string): Promise<string | null> {
+    try {
+      const token = process.env.WHATSAPP_ACCESS_TOKEN;
+      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+      // Step 1: Get temporary download URL
+      const mediaUrl = await this.getMediaUrl(mediaId);
+      if (!mediaUrl) {
+        this.logger.warn(`reuploadMedia: could not get download URL for ${mediaId}`);
+        return null;
+      }
+
+      // Step 2: Download the binary image
+      const downloadRes = await axios.get(mediaUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'arraybuffer',
+      });
+
+      const buffer = Buffer.from(downloadRes.data);
+      const mimeType = (downloadRes.headers['content-type'] as string) || 'image/jpeg';
+      this.logger.log(`reuploadMedia: downloaded ${buffer.length} bytes (${mimeType})`);
+
+      // Step 3: Upload as new media
+      const blob = new Blob([buffer], { type: mimeType });
+      const form = new FormData();
+      form.append('messaging_product', 'whatsapp');
+      form.append('type', mimeType);
+      form.append('file', blob, 'voucher.jpg');
+
+      const uploadRes = await axios.post(
+        `${this.graphApiUrl}/${phoneNumberId}/media`,
+        form,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      const newMediaId = uploadRes.data?.id;
+      this.logger.log(`reuploadMedia: ${mediaId} → ${newMediaId}`);
+      return newMediaId || null;
+    } catch (error: any) {
+      const errData = error?.response?.data || error?.message || error;
+      this.logger.error('reuploadMedia failed:', JSON.stringify(errData));
       return null;
     }
   }
