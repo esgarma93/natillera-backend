@@ -1076,7 +1076,7 @@ export class WhatsAppService {
           type: 'template',
           template: {
             name: templateName,
-            language: { code: 'es' },
+            language: { code: 'es_CO' },
             components: [
               {
                 type: 'header',
