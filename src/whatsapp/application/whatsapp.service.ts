@@ -1053,6 +1053,63 @@ export class WhatsAppService {
   }
 
   /**
+   * Send a WhatsApp template message with an image header.
+   * Templates work outside the 24-hour conversation window.
+   * Template "voucher_notification" must exist in Meta Business Manager with:
+   *   - Header: IMAGE
+   *   - Body:   {{1}}
+   */
+  private async sendTemplateImage(to: string, mediaId: string, bodyText: string): Promise<void> {
+    try {
+      const token = process.env.WHATSAPP_ACCESS_TOKEN;
+      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+      const templateName = process.env.WHATSAPP_VOUCHER_TEMPLATE || 'voucher_notification';
+
+      // Truncate body param to 1024 chars (WhatsApp template param limit)
+      const truncatedBody = bodyText.length > 1024 ? bodyText.slice(0, 1021) + '...' : bodyText;
+
+      const response = await axios.post(
+        `${this.graphApiUrl}/${phoneNumberId}/messages`,
+        {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'template',
+          template: {
+            name: templateName,
+            language: { code: 'es' },
+            components: [
+              {
+                type: 'header',
+                parameters: [
+                  { type: 'image', image: { id: mediaId } },
+                ],
+              },
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: truncatedBody },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      const waMessageId = response.data?.messages?.[0]?.id || 'unknown';
+      this.logger.log(`Template image sent to ${to} — WA msg ID: ${waMessageId}`);
+    } catch (error: any) {
+      const errData = error?.response?.data || error?.message || error;
+      this.logger.error(`Error sending template image to ${to}:`, JSON.stringify(errData));
+    }
+  }
+
+  /**
    * Return the list of admin phone numbers from the env var.
    * WHATSAPP_NOTIFICATION_PHONES should be a comma-separated list of E.164 numbers without the '+' sign.
    * Example: "573122249196,573001234567"
@@ -1064,6 +1121,7 @@ export class WhatsAppService {
 
   /**
    * Forward a WhatsApp-hosted image (by mediaId) to all admin phones.
+   * Uses template messages so delivery works outside the 24-hour window.
    */
   async forwardImageToAdmins(mediaId: string, caption?: string): Promise<void> {
     const phones = this.getAdminPhones();
@@ -1071,7 +1129,8 @@ export class WhatsAppService {
       this.logger.warn('No admin phones configured in WHATSAPP_NOTIFICATION_PHONES — skipping forward');
       return;
     }
-    await Promise.all(phones.map(phone => this.sendImage(phone, mediaId, caption)));
+    const bodyText = caption || 'Nuevo comprobante recibido';
+    await Promise.all(phones.map(phone => this.sendTemplateImage(phone, mediaId, bodyText)));
   }
 
   /**
