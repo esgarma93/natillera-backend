@@ -230,8 +230,11 @@ export class WhatsAppService {
     messageId: string,
     skipSponsorCheck: boolean = false,
   ): Promise<void> {
-    const currentMonth = new Date().getMonth() + 1;
-    const currentYear = new Date().getFullYear();
+    // Use voucher date to determine payment month (same logic as createFromWhatsAppWithValidation)
+    const voucherDate = parsedVoucher?.date || null;
+    const paymentDate = voucherDate ? new Date(voucherDate) : new Date();
+    const paymentMonth = paymentDate.getMonth() + 1;
+    const paymentYear = paymentDate.getFullYear();
 
     // Fetch sponsor info if partner has one
     let sponsorLine = '';
@@ -299,7 +302,7 @@ export class WhatsAppService {
       // ── Partial payment accumulation ──
       try {
         const existingPayment = await this.paymentsService.findExistingPayment(
-          partner.id, currentMonth, currentYear,
+          partner.id, paymentMonth, paymentYear,
         );
 
         if (existingPayment) {
@@ -321,7 +324,7 @@ export class WhatsAppService {
               `💰 Este comprobante: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
               `💰 Total acumulado: *$${newTotal.toLocaleString('es-CO')}*\n` +
               `💵 Cuota esperada: *$${existingPayment.expectedAmount.toLocaleString('es-CO')}*\n` +
-              `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
+              `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
               `━━━━━━━━━━━━━━━━━━\n\n`;
 
             if (covered) {
@@ -333,28 +336,22 @@ export class WhatsAppService {
 
             await this.sendMessage(from, msg);
 
-            // Forward to admin
-            const allPartners2 = await this.partnersService.findAll();
-            const sponsoredByPartner2 = allPartners2.filter(p => p.idPartnerPatrocinador === partner.id && p.activo);
-            const sponsoredLine2 = sponsoredByPartner2.length > 0
-              ? `🫂 Patrocinados: ${sponsoredByPartner2.map(p => `*${p.nombre}* (#${p.numeroRifa})`).join(', ')}\n`
-              : '';
-            const adminCaption =
+            // Forward to admin (independent try-catch)
+            await this.notifyAdminsVoucher(imageId, partner, detectedAmount, parsedVoucher, paymentMonth, paymentYear,
               `📥 *Comprobante complementario WhatsApp*\n` +
               `━━━━━━━━━━━━━━━━━━\n` +
               `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
               `💰 Anterior: $${existingPayment.amount.toLocaleString('es-CO')} + Nuevo: $${detectedAmount.toLocaleString('es-CO')} = *$${newTotal.toLocaleString('es-CO')}*\n` +
               `💵 Cuota: $${existingPayment.expectedAmount.toLocaleString('es-CO')}\n` +
-              `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
+              `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
               `💳 Estado: *${covered ? 'Cuota completada' : 'Aún parcial'}*\n` +
-              sponsoredLine2 +
-              `━━━━━━━━━━━━━━━━━━`;
-            await this.forwardImageToAdmins(imageId, adminCaption);
+              `━━━━━━━━━━━━━━━━━━`,
+            );
             return;
           } else {
             await this.sendMessage(
               from,
-              `⚠️ Ya existe un pago registrado para *${partner.nombre}* en *${this.getMonthName(currentMonth)} ${currentYear}* ` +
+              `⚠️ Ya existe un pago registrado para *${partner.nombre}* en *${this.getMonthName(paymentMonth)} ${paymentYear}* ` +
               `por *$${existingPayment.amount.toLocaleString('es-CO')}*.\n\n` +
               `Si crees que esto es un error, contacta al administrador.`,
             );
@@ -370,8 +367,8 @@ export class WhatsAppService {
         const validation = this.voucherParserService.validatePaymentVoucher(
           parsedVoucher,
           partner.montoCuota,
-          currentMonth,
-          currentYear,
+          paymentMonth,
+          paymentYear,
         );
 
         const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
@@ -394,7 +391,7 @@ export class WhatsAppService {
           sponsorLine +
           `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
           `💵 Cuota esperada: *$${partner.montoCuota.toLocaleString('es-CO')}*\n` +
-          `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
+          `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
           `🏦 Tipo: *${parsedVoucher.type.toUpperCase()}*\n` +
           `━━━━━━━━━━━━━━━━━━\n\n`;
 
@@ -412,27 +409,21 @@ export class WhatsAppService {
 
         await this.sendMessage(from, responseMessage);
 
-        // Forward voucher image to admin
-        const allPartners = await this.partnersService.findAll();
-        const sponsoredByPartner = allPartners.filter(p => p.idPartnerPatrocinador === partner.id && p.activo);
-        const sponsoredLine = sponsoredByPartner.length > 0
-          ? `🫂 Patrocinados: ${sponsoredByPartner.map(p => `*${p.nombre}* (#${p.numeroRifa})`).join(', ')}\n`
+        // Forward voucher image to admin (independent try-catch)
+        const statusText = validation.issues.length > 0 ? 'PENDIENTE DE REVISIÓN' : 'Pendiente de verificación';
+        const issuesText = validation.issues.length > 0
+          ? `\n⚠️ ${validation.issues.map((i) => `• ${i}`).join('\n⚠️ ')}`
           : '';
-        const statusLine = validation.issues.length > 0
-          ? `💳 Estado: *PENDIENTE DE REVISIÓN*\n`
-          : `💳 Estado: *Pendiente de verificación*\n`;
-        const adminCaption =
+        await this.notifyAdminsVoucher(imageId, partner, detectedAmount, parsedVoucher, paymentMonth, paymentYear,
           `📥 *Nuevo comprobante WhatsApp*\n` +
           `━━━━━━━━━━━━━━━━━━\n` +
           `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
           `💰 Monto: *$${detectedAmount.toLocaleString('es-CO')}* — ${parsedVoucher.type.toUpperCase()}\n` +
-          `📅 Mes: *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
-          statusLine +
-          sponsoredLine +
-          (validation.issues.length > 0
-            ? `━━━━━━━━━━━━━━━━━━\n⚠️ ${validation.issues.map((i) => `• ${i}`).join('\n⚠️ ')}`
-            : `━━━━━━━━━━━━━━━━━━`);
-        await this.forwardImageToAdmins(imageId, adminCaption);
+          `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
+          `💳 Estado: *${statusText}*\n` +
+          `━━━━━━━━━━━━━━━━━━` +
+          issuesText,
+        );
       } catch (paymentError: any) {
         this.logger.error('Error creating payment:', paymentError);
 
@@ -441,7 +432,7 @@ export class WhatsAppService {
         if (isDuplicate) {
           await this.sendMessage(
             from,
-            `⚠️ Ya existe un pago registrado para *${partner.nombre}* en *${this.getMonthName(currentMonth)} ${currentYear}*.\n\n` +
+            `⚠️ Ya existe un pago registrado para *${partner.nombre}* en *${this.getMonthName(paymentMonth)} ${paymentYear}*.\n\n` +
               `Si crees que esto es un error, contacta al administrador.`,
           );
         } else {
@@ -451,6 +442,17 @@ export class WhatsAppService {
               `Por favor contacta al administrador.`,
           );
         }
+
+        // ALWAYS notify admins even on error, so they see the voucher
+        await this.notifyAdminsVoucher(imageId, partner, detectedAmount, parsedVoucher, paymentMonth, paymentYear,
+          `⚠️ *Comprobante con ERROR — WhatsApp*\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
+          `💰 Monto: *$${detectedAmount.toLocaleString('es-CO')}* — ${parsedVoucher.type?.toUpperCase() || '?'}\n` +
+          `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
+          `❌ Error: ${paymentError?.message || 'Error desconocido'}\n` +
+          `━━━━━━━━━━━━━━━━━━`,
+        );
       }
     } else {
       // Amount not detected
@@ -886,6 +888,48 @@ export class WhatsAppService {
     }
 
     await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId);
+  }
+
+  /**
+   * Notify all admin phones with a voucher image. This method NEVER throws —
+   * it catches all errors internally so callers can fire-and-forget.
+   * Includes sponsored partner info in the caption automatically.
+   */
+  private async notifyAdminsVoucher(
+    imageId: string,
+    partner: any,
+    detectedAmount: number,
+    parsedVoucher: any,
+    paymentMonth: number,
+    paymentYear: number,
+    captionOverride?: string,
+  ): Promise<void> {
+    try {
+      let caption = captionOverride || '';
+
+      // Try to append sponsored partners info to the caption
+      try {
+        const allPartners = await this.partnersService.findAll();
+        const sponsored = allPartners.filter(p => p.idPartnerPatrocinador === partner.id && p.activo);
+        if (sponsored.length > 0) {
+          const sponsoredText = `🫂 Patrocinados: ${sponsored.map(p => `*${p.nombre}* (#${p.numeroRifa})`).join(', ')}`;
+          // Insert before last ━━ separator if present, else append
+          const lastSep = caption.lastIndexOf('━━━━━━━━━━━━━━━━━━');
+          if (lastSep > 0) {
+            caption = caption.slice(0, lastSep) + sponsoredText + '\n' + caption.slice(lastSep);
+          } else {
+            caption += '\n' + sponsoredText;
+          }
+        }
+      } catch (partnerErr) {
+        this.logger.warn('Could not fetch sponsored partners for admin caption:', partnerErr);
+      }
+
+      await this.forwardImageToAdmins(imageId, caption);
+      this.logger.log(`Admin notification sent for ${partner.nombre} (Rifa #${partner.numeroRifa})`);
+    } catch (notifyErr) {
+      this.logger.error('Failed to notify admins with voucher image:', notifyErr);
+    }
   }
 
   /**
