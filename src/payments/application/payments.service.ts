@@ -179,6 +179,7 @@ export class PaymentsService {
     voucherDate: Date | null,
     validationIssues: string[],
     voucherStorageKey?: string,
+    whatsappFrom?: string,
   ): Promise<PaymentResponseDto> {
     // Get active period
     const activePeriod = await this.periodsService.getActivePeriod();
@@ -227,7 +228,11 @@ export class PaymentsService {
       voucherImageUrl,
       voucherStorageKey,
       whatsappMessageId,
-      notes: `Payment received via WhatsApp - ${voucherType.toUpperCase()}`,
+      notes: whatsappFrom
+        ? `Recibido por WhatsApp - ${voucherType.toUpperCase()} | Enviado desde: ${whatsappFrom}`
+        : whatsappMessageId
+          ? `Recibido por WhatsApp - ${voucherType.toUpperCase()}`
+          : `Cargado desde el portal - ${voucherType.toUpperCase()}`,
     });
 
     const created = await this.paymentRepository.create(payment);

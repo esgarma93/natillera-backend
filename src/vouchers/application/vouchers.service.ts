@@ -4,6 +4,7 @@ import { VoucherParserService } from '../../whatsapp/application/voucher-parser.
 import { WhatsAppService } from '../../whatsapp/application/whatsapp.service';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
+import { StorageService } from '../../storage/storage.service';
 import { ProcessVoucherDto } from './dto/process-voucher.dto';
 import { VoucherResultDto } from './dto/voucher-result.dto';
 
@@ -17,6 +18,7 @@ export class VouchersService {
     private readonly whatsappService: WhatsAppService,
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
+    private readonly storageService: StorageService,
   ) {}
 
   /**
@@ -181,15 +183,33 @@ export class VouchersService {
     }
 
     try {
+      // Upload voucher image to R2 cloud storage
+      let r2Url: string | null = null;
+      let r2Key: string | null = null;
+      if (this.storageService.isEnabled() && dto.imageBase64) {
+        try {
+          const base64Data = dto.imageBase64.includes(',') ? dto.imageBase64.split(',')[1] : dto.imageBase64;
+          const isPng = dto.imageBase64.startsWith('data:image/png');
+          const mimeType = isPng ? 'image/png' : 'image/jpeg';
+          const buffer = Buffer.from(base64Data, 'base64');
+          r2Key = this.storageService.buildVoucherKey(partner.id, parsedVoucher.type || 'portal', mimeType);
+          r2Url = await this.storageService.uploadVoucher(buffer, r2Key, mimeType);
+          this.logger.log(`Voucher uploaded to R2 from portal: ${r2Key}`);
+        } catch (r2Err) {
+          this.logger.error('Error uploading voucher to R2 from portal:', r2Err);
+        }
+      }
+
       // Create main payment
       const payment = await this.paymentsService.createFromWhatsAppWithValidation(
         partner.id,
         partner.montoCuota, // Only pay the expected amount
-        null, // No image URL for manual uploads
+        r2Url, // R2 image URL (or null if upload failed)
         null, // No WhatsApp message ID
         parsedVoucher.type,
         parsedVoucher.date,
         validation.issues,
+        r2Key, // R2 storage key
       );
 
       this.logger.log(`Payment created for partner: ${partner.nombre}, amount: ${partner.montoCuota}, status: ${payment.status}`);
@@ -270,11 +290,12 @@ export class VouchersService {
             const sponsoredPayment = await this.paymentsService.createFromWhatsAppWithValidation(
               sponsoredPartner.id,
               amountToApply,
-              null,
+              r2Url,
               null,
               parsedVoucher.type,
               parsedVoucher.date,
               [`Pago aplicado del excedente del socio ${partner.nombre}`],
+              r2Key,
             );
 
             additionalPayments.push({
