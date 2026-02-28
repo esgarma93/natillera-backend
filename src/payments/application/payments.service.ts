@@ -228,11 +228,17 @@ export class PaymentsService {
       voucherImageUrl,
       voucherStorageKey,
       whatsappMessageId,
-      notes: whatsappFrom
-        ? `Recibido por WhatsApp - ${voucherType.toUpperCase()} | Enviado desde: ${whatsappFrom}`
-        : whatsappMessageId
-          ? `Recibido por WhatsApp - ${voucherType.toUpperCase()}`
-          : `Cargado desde el portal - ${voucherType.toUpperCase()}`,
+      notes: (() => {
+        let base = whatsappFrom
+          ? `Recibido por WhatsApp - ${voucherType.toUpperCase()} | Enviado desde: ${whatsappFrom}`
+          : whatsappMessageId
+            ? `Recibido por WhatsApp - ${voucherType.toUpperCase()}`
+            : `Cargado desde el portal - ${voucherType.toUpperCase()}`;
+        if (validationIssues.length > 0) {
+          base += ` | Motivo pendiente: ${validationIssues.join('; ')}`;
+        }
+        return base;
+      })(),
     });
 
     const created = await this.paymentRepository.create(payment);
