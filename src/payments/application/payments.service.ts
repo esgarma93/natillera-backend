@@ -26,7 +26,7 @@ export class PaymentsService {
 
   async findAll(): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findAll();
-    return payments.map((payment) => this.toResponseDto(payment));
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
   async findById(id: string): Promise<PaymentResponseDto> {
@@ -39,27 +39,27 @@ export class PaymentsService {
 
   async findByPartnerId(partnerId: string): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findByPartnerId(partnerId);
-    return payments.map((payment) => this.toResponseDto(payment));
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
   async findByPeriodId(periodId: string): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findByPeriodId(periodId);
-    return payments.map((payment) => this.toResponseDto(payment));
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
   async findByPeriodAndMonth(periodId: string, month: number): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findByPeriodAndMonth(periodId, month);
-    return payments.map((payment) => this.toResponseDto(payment));
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
   async findByMonthAndYear(month: number, year: number): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findByMonthAndYear(month, year);
-    return payments.map((payment) => this.toResponseDto(payment));
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
   async findByPartnerAndPeriod(partnerId: string, periodId: string): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findByPartnerAndPeriod(partnerId, periodId);
-    return payments.map((payment) => this.toResponseDto(payment));
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
   async findByDateRange(startDate: string, endDate: string): Promise<PaymentResponseDto[]> {
@@ -67,7 +67,7 @@ export class PaymentsService {
       new Date(startDate),
       new Date(endDate),
     );
-    return payments.map((payment) => this.toResponseDto(payment));
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
   async create(createPaymentDto: CreatePaymentDto): Promise<PaymentResponseDto> {
@@ -443,7 +443,14 @@ export class PaymentsService {
     };
   }
 
-  private toResponseDto(payment: Payment): PaymentResponseDto {
+  private async toResponseDto(payment: Payment): Promise<PaymentResponseDto> {
+    // Resolve presigned URL for voucher (cached in Redis)
+    const resolvedVoucherUrl = await this.storageService.getCachedPresignedUrl(
+      payment.id,
+      payment.voucherStorageKey,
+      payment.voucherImageUrl,
+    );
+
     return {
       id: payment.id,
       partnerId: payment.partnerId,
@@ -459,7 +466,7 @@ export class PaymentsService {
       status: payment.status,
       pendingDescription: payment.pendingDescription,
       voucherType: payment.voucherType,
-      voucherImageUrl: payment.voucherImageUrl,
+      voucherImageUrl: resolvedVoucherUrl ?? undefined,
       voucherStorageKey: payment.voucherStorageKey,
       whatsappMessageId: payment.whatsappMessageId,
       notes: payment.notes,

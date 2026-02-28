@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { UsersService } from '../../users/application/users.service';
+import { RafflesService } from '../../raffles/application/raffles.service';
 import { RedisService } from '../../redis/redis.service';
 import { StorageService } from '../../storage/storage.service';
 import { OcrService } from './ocr.service';
@@ -57,6 +58,8 @@ interface AuthSession {
   authenticated: boolean;
   attempts: number;       // failed PIN attempts
   waitingForPin: boolean; // true = bot asked for PIN, waiting response
+  pendingCommand?: string; // command that triggered the PIN flow (e.g. 'menu')
+  menuActive?: boolean;    // true = numbered menu was shown, waiting for 1/2/3
 }
 
 const MAX_PIN_ATTEMPTS = 3;
@@ -70,6 +73,8 @@ export class WhatsAppService {
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
     private readonly usersService: UsersService,
+    @Inject(forwardRef(() => RafflesService))
+    private readonly rafflesService: RafflesService,
     private readonly redisService: RedisService,
     private readonly storageService: StorageService,
     private readonly ocrService: OcrService,
@@ -556,22 +561,45 @@ export class WhatsAppService {
       return;
     }
 
-    // ── MENU command — show options based on role (requires PIN) ──
+    // ── MENU command — ask for PIN, then show numbered options ──
     if (textLower === 'menu' || textLower === 'menú' || textLower === 'opciones') {
       if (authSession?.authenticated) {
         await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
-        let menuMsg =
-          `📋 *Menú de opciones*\n\n` +
-          `ℹ️ Escribir *INFO* para ver tu información y estado de pago\n` +
-          `🧾 Escribir *RECIBO* para ver tu último comprobante\n`;
-
-        if (await this.isAdmin(from)) {
-          menuMsg += `📋 Escribir *COMPROBANTES* para ver todos los comprobantes del mes\n`;
-        }
-
-        await this.sendMessage(from, menuMsg);
+        // Show numbered menu and set menuActive flag
+        const isAdminUser = await this.isAdmin(from);
+        await this.redisService.set(KEY_WA_AUTH + from, {
+          ...authSession,
+          menuActive: true,
+        }, AUTH_SESSION_TTL);
+        const normalizedPhone = this.normalizePhone(from);
+        const partner = await this.partnersService.findByCelular(normalizedPhone);
+        await this.sendNumberedMenu(from, partner?.nombre ?? 'Socio', isAdminUser);
       } else {
-        await this.startAuthFlow(from);
+        await this.startAuthFlow(from, 'menu');
+      }
+      return;
+    }
+
+    // ── Numbered menu selection (1, 2, 3) when menu is active ──
+    if (authSession?.authenticated && authSession?.menuActive && /^[1-3]$/.test(text.trim())) {
+      await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
+      // Clear menuActive flag
+      await this.redisService.set(KEY_WA_AUTH + from, {
+        ...authSession,
+        menuActive: false,
+      }, AUTH_SESSION_TTL);
+
+      const option = parseInt(text.trim(), 10);
+      if (option === 1) {
+        await this.sendPartnerInfoWithVoucher(from);
+      } else if (option === 2) {
+        await this.sendLastRaffleWinner(from);
+      } else if (option === 3) {
+        if (await this.isAdmin(from)) {
+          await this.sendMonthlyVouchers(from, 'COMPROBANTES');
+        } else {
+          await this.sendMessage(from, `⚠️ Esta opción está disponible solo para administradores.`);
+        }
       }
       return;
     }
@@ -629,7 +657,7 @@ export class WhatsAppService {
   /**
    * Start the PIN authentication flow: look up user, send PIN request.
    */
-  private async startAuthFlow(from: string): Promise<void> {
+  private async startAuthFlow(from: string, pendingCommand?: string): Promise<void> {
     const normalizedPhone = this.normalizePhone(from);
 
     // Check if phone is registered as a user
@@ -660,6 +688,7 @@ export class WhatsAppService {
       authenticated: false,
       waitingForPin: true,
       attempts: 0,
+      pendingCommand,
     }, PENDING_SESSION_TTL);
 
     await this.sendMessage(
@@ -683,22 +712,31 @@ export class WhatsAppService {
 
     if (user) {
       // Success — store authenticated session in Redis with 1-hour TTL
+      const isAdminUser = await this.isAdmin(from);
+      const pendingCmd = session.pendingCommand;
+
       await this.redisService.set(KEY_WA_AUTH + from, {
         authenticated: true,
         waitingForPin: false,
         attempts: 0,
+        menuActive: pendingCmd === 'menu',
       }, AUTH_SESSION_TTL);
 
       const partner = await this.partnersService.findByCelular(normalizedPhone);
       const name = partner?.nombre ?? user.celular;
 
-      let welcomeMsg =
-        `✅ *¡Bienvenido/a, ${name}!* 🎉\n\n` +
-        `Soy *Nacho* 🌿 y estoy listo para ayudarte.\n\n` +
-        `📸 Envía una foto de tu comprobante para registrar un pago\n` +
-        `ℹ️ Escribe *MENU* para ver más opciones`;
+      if (pendingCmd === 'menu') {
+        // Show numbered menu right after successful PIN
+        await this.sendNumberedMenu(from, name, isAdminUser);
+      } else {
+        let welcomeMsg =
+          `✅ *¡Bienvenido/a, ${name}!* 🎉\n\n` +
+          `Soy *Nacho* 🌿 y estoy listo para ayudarte.\n\n` +
+          `📸 Envía una foto de tu comprobante para registrar un pago\n` +
+          `ℹ️ Escribe *MENU* para ver más opciones`;
 
-      await this.sendMessage(from, welcomeMsg);
+        await this.sendMessage(from, welcomeMsg);
+      }
     } else {
       // Failed attempt
       session.attempts += 1;
@@ -741,6 +779,24 @@ export class WhatsAppService {
       `_Solo se aceptan comprobantes de Nequi o Bancolombia._`;
 
     await this.sendMessage(from, greeting);
+  }
+
+  /**
+   * Send the numbered menu. Options vary by role.
+   */
+  private async sendNumberedMenu(from: string, name: string, isAdmin: boolean): Promise<void> {
+    let menuMsg =
+      `📋 *Menú de opciones — ${name}*\n\n` +
+      `1️⃣ Mi información, estado de pago y comprobante\n` +
+      `2️⃣ Ganador de la última rifa\n`;
+
+    if (isAdmin) {
+      menuMsg += `3️⃣ Ver todos los comprobantes del mes\n`;
+    }
+
+    menuMsg += `\n_Responde con el *número* de la opción._`;
+
+    await this.sendMessage(from, menuMsg);
   }
 
   /**
@@ -818,6 +874,156 @@ export class WhatsAppService {
   }
 
   /**
+   * Combined option: send partner info + payment status + last voucher in a single flow.
+   */
+  private async sendPartnerInfoWithVoucher(from: string): Promise<void> {
+    const normalizedPhone = this.normalizePhone(from);
+    const partner = await this.partnersService.findByCelular(normalizedPhone);
+
+    if (!partner) {
+      await this.sendMessage(
+        from,
+        `⚠️ No encontré un socio asociado a tu número *${normalizedPhone}*.\n\n` +
+          `Contacta al administrador para registrar tu número en el sistema.`,
+      );
+      return;
+    }
+
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+
+    // ── Payment status ──
+    const monthPayments = await this.paymentsService.findByMonthAndYear(currentMonth, currentYear);
+    const currentMonthPayment = monthPayments.find(
+      p => p.partnerId === partner.id && (p.status === 'verified' || p.status === 'pending'),
+    );
+    const paymentStatus = currentMonthPayment
+      ? currentMonthPayment.status === 'verified'
+        ? `✅ *Pagado* (verificado)`
+        : `⏳ *Pendiente de verificación*`
+      : `❌ *No registrado*`;
+
+    // ── Next raffle date ──
+    const nextRaffleDate = this.getLastFridayOfMonth(currentMonth, currentYear);
+    const nextRaffleDateStr = `${nextRaffleDate.getDate()} de ${this.getMonthName(currentMonth)} de ${currentYear}`;
+
+    let msg =
+      `👤 *Tu cuenta — ${partner.nombre}*\n\n` +
+      `🎰 Rifa: *#${partner.numeroRifa}*\n` +
+      `💵 Cuota mensual: *$${partner.montoCuota.toLocaleString('es-CO')}*\n` +
+      `✅ Estado: *${partner.activo ? 'Activo' : 'Inactivo'}*\n`;
+
+    // Sponsor info
+    if (partner.idPartnerPatrocinador) {
+      try {
+        const sponsor = await this.partnersService.findById(partner.idPartnerPatrocinador);
+        if (sponsor) {
+          msg += `🤝 Patrocinador: *${sponsor.nombre}* (Rifa #${sponsor.numeroRifa})\n`;
+        }
+      } catch (_) { /* sponsor not found */ }
+    }
+
+    msg +=
+      `\n━━━━━━━━━━━━━━━━━━\n` +
+      `📅 *${this.getMonthName(currentMonth)} ${currentYear}*\n` +
+      `💳 Estado de pago: ${paymentStatus}\n` +
+      `🎲 Próxima rifa: *${nextRaffleDateStr}*\n` +
+      `━━━━━━━━━━━━━━━━━━\n\n`;
+
+    // ── Last voucher ──
+    try {
+      const payments = await this.paymentsService.findByPartnerId(partner.id);
+      const withVoucher = payments
+        .filter(p => p.voucherImageUrl || p.voucherStorageKey)
+        .sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime());
+
+      if (withVoucher.length > 0) {
+        const last = withVoucher[0];
+        const statusEmoji = last.status === 'verified' ? '✅' : last.status === 'pending' ? '⏳' : '❌';
+        const statusText = last.status === 'verified' ? 'Verificado' : last.status === 'pending' ? 'Pendiente' : 'Rechazado';
+        const presignedUrl = await this.resolveVoucherUrl(last.id, last.voucherStorageKey, last.voucherImageUrl);
+
+        msg +=
+          `🧾 *Último comprobante*\n` +
+          `💰 $${last.amount.toLocaleString('es-CO')} — ${this.getMonthName(last.month)} ${last.periodYear || ''}\n` +
+          `${statusEmoji} ${statusText}\n`;
+
+        if (presignedUrl) {
+          msg += `🔗 ${presignedUrl}\n_Enlace válido por 1 hora._\n`;
+        }
+      } else {
+        msg += `📋 _No tienes comprobantes registrados aún._\n`;
+        msg += `📸 Envía una foto de tu comprobante para registrar tu primer pago.\n`;
+      }
+    } catch (err) {
+      this.logger.error('Error fetching voucher in combined info:', err);
+    }
+
+    await this.sendMessage(from, msg);
+  }
+
+  /**
+   * Send the last (most recent) raffle result to the user.
+   */
+  private async sendLastRaffleWinner(from: string): Promise<void> {
+    try {
+      const now = new Date();
+      const currentMonth = now.getMonth() + 1;
+      const currentYear = now.getFullYear();
+
+      // Try current month first, then previous month
+      let raffle = await this.rafflesService.findByMonthAndYear(currentMonth, currentYear);
+
+      if (!raffle || raffle.status === 'pending') {
+        // Try previous month
+        const prevMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+        const prevYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+        raffle = await this.rafflesService.findByMonthAndYear(prevMonth, prevYear);
+      }
+
+      if (!raffle || raffle.status === 'pending') {
+        await this.sendMessage(
+          from,
+          `🎰 *Última rifa*\n\n` +
+          `No se ha realizado ningún sorteo recientemente.\n\n` +
+          `_El sorteo se realiza el sábado después del último viernes de cada mes._`,
+        );
+        return;
+      }
+
+      const monthName = raffle.monthName || this.getMonthName(raffle.month);
+
+      let msg =
+        `🎰 *Rifa de ${monthName} ${raffle.year}*\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `🔢 Lotería de Medellín: *${raffle.lotteryNumber || '—'}*\n` +
+        `🎯 Últimas dos cifras: *${raffle.winningDigits || '—'}*\n` +
+        `💰 Recaudado: *$${raffle.totalCollected.toLocaleString('es-CO')}*\n` +
+        `🏆 Premio: *$${raffle.prizeAmount.toLocaleString('es-CO')}*\n` +
+        `━━━━━━━━━━━━━━━━━━\n\n`;
+
+      if (raffle.status === 'completed' && raffle.winnerName) {
+        msg +=
+          `🎉 *¡Ganador: ${raffle.winnerName}!*\n` +
+          `🎰 Número de rifa: *#${raffle.winnerRaffleNumber}*\n\n` +
+          `¡Felicitaciones! 🥳`;
+      } else if (raffle.status === 'no_winner') {
+        msg +=
+          `😔 *No hubo ganador este mes.*\n\n` +
+          `El monto de *$${raffle.remainingAmount.toLocaleString('es-CO')}* queda acumulado. 🏦`;
+      }
+
+      await this.sendMessage(from, msg);
+    } catch (error) {
+      this.logger.error('Error sending last raffle winner:', error);
+      await this.sendMessage(
+        from,
+        `❌ Ocurrió un error al consultar la rifa.\nPor favor intenta de nuevo.`,
+      );
+    }
+  }
+  /**
    * Send the last voucher image to the user via WhatsApp.
    * Looks up the partner's most recent payment that has a voucher.
    * Sends a text message with payment info and a presigned URL to view the image.
@@ -855,7 +1061,7 @@ export class WhatsAppService {
       const statusEmoji = lastPayment.status === 'verified' ? '✅' : lastPayment.status === 'pending' ? '⏳' : '❌';
       const statusText = lastPayment.status === 'verified' ? 'Verificado' : lastPayment.status === 'pending' ? 'Pendiente' : 'Rechazado';
 
-      const presignedUrl = await this.resolveVoucherUrl(lastPayment.voucherStorageKey, lastPayment.voucherImageUrl);
+      const presignedUrl = await this.resolveVoucherUrl(lastPayment.id, lastPayment.voucherStorageKey, lastPayment.voucherImageUrl);
 
       let msg =
         `🧾 *Último comprobante registrado*\n\n` +
@@ -925,7 +1131,7 @@ export class WhatsAppService {
 
       for (const payment of withVoucher) {
         const statusEmoji = payment.status === 'verified' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
-        const presignedUrl = await this.resolveVoucherUrl(payment.voucherStorageKey, payment.voucherImageUrl);
+        const presignedUrl = await this.resolveVoucherUrl(payment.id, payment.voucherStorageKey, payment.voucherImageUrl);
 
         msg += `${statusEmoji} *${payment.partnerName || 'Socio'}* — $${payment.amount.toLocaleString('es-CO')}\n`;
         if (presignedUrl) {
@@ -966,19 +1172,10 @@ export class WhatsAppService {
 
   /**
    * Resolve the best accessible URL for a voucher image.
-   * Prefers a presigned R2 URL (valid for 1 hour) over the stored public URL.
+   * Uses Redis-cached presigned URLs (55 min TTL) to avoid regenerating each time.
    */
-  private async resolveVoucherUrl(storageKey?: string, fallbackUrl?: string): Promise<string | null> {
-    // Try presigned URL from R2 first
-    if (storageKey && this.storageService.isEnabled()) {
-      const presigned = await this.storageService.getPresignedUrl(storageKey, 3600);
-      if (presigned) {
-        this.logger.log(`Resolved presigned URL for key: ${storageKey}`);
-        return presigned;
-      }
-    }
-    // Fallback to stored public URL
-    return fallbackUrl || null;
+  private async resolveVoucherUrl(paymentId: string, storageKey?: string, fallbackUrl?: string): Promise<string | null> {
+    return this.storageService.getCachedPresignedUrl(paymentId, storageKey, fallbackUrl);
   }
 
   /**

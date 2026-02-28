@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, Inject } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { MonthlyRaffle, RaffleStatus } from '../domain/monthly-raffle.entity';
 import { MonthlyRaffleRepository } from '../domain/monthly-raffle.repository';
@@ -23,6 +23,7 @@ export class RafflesService {
     private readonly raffleRepository: MonthlyRaffleRepository,
     private readonly partnersService: PartnersService,
     private readonly paymentsService: PaymentsService,
+    @Inject(forwardRef(() => WhatsAppService))
     private readonly whatsAppService: WhatsAppService,
   ) {}
 

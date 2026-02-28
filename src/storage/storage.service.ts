@@ -7,6 +7,7 @@ import {
   HeadBucketCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { RedisService } from '../redis/redis.service';
 
 /**
  * StorageService — uploads voucher images to Cloudflare R2.
@@ -24,6 +25,11 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
  *   R2_BUCKET_NAME       – R2 bucket name (e.g. "natillera-vouchers")
  *   R2_PUBLIC_URL        – (optional) custom domain or R2.dev public URL
  */
+/** Redis key prefix for cached presigned URLs */
+const KEY_VOUCHER_URL = 'voucher:url:';
+/** Cache TTL: 55 minutes (presigned URLs expire in 60 min) */
+const PRESIGNED_CACHE_TTL = 55 * 60;
+
 @Injectable()
 export class StorageService implements OnModuleInit {
   private readonly logger = new Logger(StorageService.name);
@@ -31,6 +37,8 @@ export class StorageService implements OnModuleInit {
   private bucketName: string;
   private publicUrl: string | null;
   private enabled = false;
+
+  constructor(private readonly redisService: RedisService) {}
 
   onModuleInit() {
     const accountId = process.env.R2_ACCOUNT_ID;
@@ -122,6 +130,50 @@ export class StorageService implements OnModuleInit {
       this.logger.error(`Failed to generate presigned URL for ${key}:`, error);
       return null;
     }
+  }
+
+  /**
+   * Get a presigned URL with Redis caching.
+   * Checks Redis first (key = voucher:url:{paymentId}); on miss, generates
+   * a fresh presigned URL (1 h), caches it for 55 min, and returns it.
+   *
+   * @param paymentId   – payment ID used as Redis cache key
+   * @param storageKey  – R2 object key
+   * @param fallbackUrl – optional raw URL to return when R2 is disabled
+   */
+  async getCachedPresignedUrl(
+    paymentId: string,
+    storageKey?: string,
+    fallbackUrl?: string,
+  ): Promise<string | null> {
+    if (!storageKey && !fallbackUrl) return null;
+
+    const cacheKey = KEY_VOUCHER_URL + paymentId;
+
+    // 1. Check Redis cache
+    try {
+      const cached = await this.redisService.get<string>(cacheKey);
+      if (cached) return cached;
+    } catch (err) {
+      this.logger.warn(`Redis read failed for ${cacheKey}:`, err);
+    }
+
+    // 2. Generate presigned URL from R2
+    if (storageKey && this.enabled) {
+      const presigned = await this.getPresignedUrl(storageKey, 3600);
+      if (presigned) {
+        // 3. Cache in Redis
+        try {
+          await this.redisService.set(cacheKey, presigned, PRESIGNED_CACHE_TTL);
+        } catch (err) {
+          this.logger.warn(`Redis write failed for ${cacheKey}:`, err);
+        }
+        return presigned;
+      }
+    }
+
+    // 4. Fallback to stored URL
+    return fallbackUrl || null;
   }
 
   /**

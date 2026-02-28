@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { RafflesService } from './application/raffles.service';
@@ -17,7 +17,7 @@ import { WhatsAppModule } from '../whatsapp/whatsapp.module';
     ScheduleModule.forRoot(),
     PartnersModule,
     PaymentsModule,
-    WhatsAppModule,
+    forwardRef(() => WhatsAppModule),
   ],
   controllers: [RafflesController],
   providers: [
