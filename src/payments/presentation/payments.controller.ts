@@ -10,7 +10,10 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  Res,
+  NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { PaymentsService } from '../application/payments.service';
 import { CreatePaymentDto } from '../application/dto/create-payment.dto';
 import { UpdatePaymentDto } from '../application/dto/update-payment.dto';
@@ -54,6 +57,22 @@ export class PaymentsController {
   @Get('stats/year/:year')
   async getStatsByYear(@Param('year') year: string) {
     return this.paymentsService.getStatsByYear(parseInt(year, 10));
+  }
+
+  /**
+   * Redirect to the presigned voucher URL.
+   * Used by WhatsApp messages to avoid truncated presigned URLs.
+   */
+  @Get(':id/voucher')
+  async redirectToVoucher(
+    @Param('id') id: string,
+    @Res() res: Response,
+  ) {
+    const presignedUrl = await this.paymentsService.getVoucherPresignedUrl(id);
+    if (!presignedUrl) {
+      throw new NotFoundException('No voucher found for this payment');
+    }
+    return res.redirect(presignedUrl);
   }
 
   @Get(':id')

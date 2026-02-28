@@ -82,6 +82,16 @@ export class WhatsAppService {
   ) {}
 
   /**
+   * Build a short redirect URL for a payment voucher.
+   * The backend /payments/:id/voucher endpoint redirects to the presigned URL.
+   * This avoids WhatsApp truncating long presigned URLs.
+   */
+  private buildVoucherRedirectUrl(paymentId: string): string {
+    const appUrl = (process.env.APP_URL || 'http://localhost:3001').replace(/\/+$/, '');
+    return `${appUrl}/payments/${paymentId}/voucher`;
+  }
+
+  /**
    * Verify webhook subscription (required by Meta)
    */
   verifyWebhook(mode: string, token: string, challenge: string): string | null {
@@ -942,16 +952,14 @@ export class WhatsAppService {
         const last = withVoucher[0];
         const statusEmoji = last.status === 'verified' ? '✅' : last.status === 'pending' ? '⏳' : '❌';
         const statusText = last.status === 'verified' ? 'Verificado' : last.status === 'pending' ? 'Pendiente' : 'Rechazado';
-        const presignedUrl = await this.resolveVoucherUrl(last.id, last.voucherStorageKey, last.voucherImageUrl);
+        const voucherUrl = this.buildVoucherRedirectUrl(last.id);
 
         msg +=
           `🧾 *Último comprobante*\n` +
           `💰 $${last.amount.toLocaleString('es-CO')} — ${this.getMonthName(last.month)} ${last.periodYear || ''}\n` +
           `${statusEmoji} ${statusText}\n`;
 
-        if (presignedUrl) {
-          msg += `🔗 ${presignedUrl}\n_Enlace válido por 1 hora._\n`;
-        }
+        msg += `🔗 ${voucherUrl}\n`;
       } else {
         msg += `📋 _No tienes comprobantes registrados aún._\n`;
         msg += `📸 Envía una foto de tu comprobante para registrar tu primer pago.\n`;
@@ -1061,7 +1069,7 @@ export class WhatsAppService {
       const statusEmoji = lastPayment.status === 'verified' ? '✅' : lastPayment.status === 'pending' ? '⏳' : '❌';
       const statusText = lastPayment.status === 'verified' ? 'Verificado' : lastPayment.status === 'pending' ? 'Pendiente' : 'Rechazado';
 
-      const presignedUrl = await this.resolveVoucherUrl(lastPayment.id, lastPayment.voucherStorageKey, lastPayment.voucherImageUrl);
+      const voucherUrl = this.buildVoucherRedirectUrl(lastPayment.id);
 
       let msg =
         `🧾 *Último comprobante registrado*\n\n` +
@@ -1073,11 +1081,7 @@ export class WhatsAppService {
         `${statusEmoji} Estado: *${statusText}*\n` +
         `━━━━━━━━━━━━━━━━━━\n\n`;
 
-      if (presignedUrl) {
-        msg += `🔗 *Ver comprobante:*\n${presignedUrl}\n\n_El enlace es válido por 1 hora._`;
-      } else {
-        msg += `⚠️ No se pudo generar el enlace del comprobante.`;
-      }
+      msg += `🔗 *Ver comprobante:*\n${voucherUrl}`;
 
       await this.sendMessage(from, msg);
     } catch (error) {
@@ -1131,18 +1135,13 @@ export class WhatsAppService {
 
       for (const payment of withVoucher) {
         const statusEmoji = payment.status === 'verified' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
-        const presignedUrl = await this.resolveVoucherUrl(payment.id, payment.voucherStorageKey, payment.voucherImageUrl);
+        const voucherUrl = this.buildVoucherRedirectUrl(payment.id);
 
         msg += `${statusEmoji} *${payment.partnerName || 'Socio'}* — $${payment.amount.toLocaleString('es-CO')}\n`;
-        if (presignedUrl) {
-          msg += `🔗 ${presignedUrl}\n`;
-        } else {
-          msg += `⚠️ _Enlace no disponible_\n`;
-        }
-        msg += `\n`;
+        msg += `🔗 ${voucherUrl}\n\n`;
       }
 
-      msg += `━━━━━━━━━━━━━━━━━━\n_Los enlaces son válidos por 1 hora._`;
+      msg += `━━━━━━━━━━━━━━━━━━`;
 
       // WhatsApp max message length is ~65536 chars; split if needed
       if (msg.length > 4096) {

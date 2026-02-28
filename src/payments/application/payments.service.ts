@@ -443,6 +443,21 @@ export class PaymentsService {
     };
   }
 
+  /**
+   * Return a presigned URL for a payment's voucher.
+   * Used by the redirect endpoint so WhatsApp can send a short URL.
+   */
+  async getVoucherPresignedUrl(id: string): Promise<string | null> {
+    const payment = await this.paymentRepository.findById(id);
+    if (!payment) throw new NotFoundException(`Payment with ID ${id} not found`);
+    if (!payment.voucherStorageKey && !payment.voucherImageUrl) return null;
+    return this.storageService.getCachedPresignedUrl(
+      payment.id,
+      payment.voucherStorageKey,
+      payment.voucherImageUrl,
+    );
+  }
+
   private async toResponseDto(payment: Payment): Promise<PaymentResponseDto> {
     // Resolve presigned URL for voucher (cached in Redis)
     const resolvedVoucherUrl = await this.storageService.getCachedPresignedUrl(
