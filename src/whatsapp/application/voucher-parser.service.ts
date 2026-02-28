@@ -167,8 +167,11 @@ export class VoucherParserService {
           /beneficiario[:\s]+([A-ZÁÉÍÓÚÑ][A-Za-záéíóúñ\s]+)/i,
         ],
         recipientAccount: [
+          /(\d{3}\s*[-–—]\s*\d{5,6}\s*[-–—]\s*\d{2})/,
           /(\d{3}[-]?\d{6}[-]?\d{2})/,
           /cuenta[:\s]*[#]*\s*(\d{4,})/i,
+          /ahorros\s+(\d{3}\s*[-–—]\s*\d{5,6}\s*[-–—]\s*\d{2})/i,
+          /corriente\s+(\d{3}\s*[-–—]\s*\d{5,6}\s*[-–—]\s*\d{2})/i,
         ],
         status: [
           /transferencia\s+(exitosa)/i,
