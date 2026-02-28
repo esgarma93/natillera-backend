@@ -6,6 +6,7 @@ import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PaymentResponseDto } from './dto/payment-response.dto';
 import { IPartnerRepository, PARTNER_REPOSITORY } from '../../partners/domain/partner.repository';
 import { PeriodsService } from '../../periods/application/periods.service';
+import { StorageService } from '../../storage/storage.service';
 
 @Injectable()
 export class PaymentsService {
@@ -20,6 +21,7 @@ export class PaymentsService {
     @Inject(PARTNER_REPOSITORY)
     private readonly partnerRepository: IPartnerRepository,
     private readonly periodsService: PeriodsService,
+    private readonly storageService: StorageService,
   ) {}
 
   async findAll(): Promise<PaymentResponseDto[]> {
@@ -358,6 +360,15 @@ export class PaymentsService {
     const existing = await this.paymentRepository.findById(id);
     if (!existing) {
       throw new NotFoundException(`Payment with ID ${id} not found`);
+    }
+
+    // Delete voucher image from R2 if it exists
+    if (existing.voucherStorageKey) {
+      try {
+        await this.storageService.deleteVoucher(existing.voucherStorageKey);
+      } catch (err) {
+        // Log but don't block deletion
+      }
     }
 
     await this.paymentRepository.delete(id);
