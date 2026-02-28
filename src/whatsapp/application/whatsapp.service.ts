@@ -363,18 +363,6 @@ export class WhatsAppService {
             }
 
             await this.sendMessage(from, msg);
-
-            // Forward to admin (independent try-catch)
-            await this.notifyAdminsVoucher(imageId, partner, detectedAmount, parsedVoucher, paymentMonth, paymentYear,
-              `📥 *Comprobante complementario WhatsApp*\n` +
-              `━━━━━━━━━━━━━━━━━━\n` +
-              `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
-              `💰 Anterior: $${existingPayment.amount.toLocaleString('es-CO')} + Nuevo: $${detectedAmount.toLocaleString('es-CO')} = *$${newTotal.toLocaleString('es-CO')}*\n` +
-              `💵 Cuota: $${existingPayment.expectedAmount.toLocaleString('es-CO')}\n` +
-              `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
-              `💳 Estado: *${covered ? 'Cuota completada' : 'Aún parcial'}*\n` +
-              `━━━━━━━━━━━━━━━━━━`,
-            );
             return;
           } else {
             await this.sendMessage(
@@ -438,22 +426,6 @@ export class WhatsAppService {
         }
 
         await this.sendMessage(from, responseMessage);
-
-        // Forward voucher image to admin (independent try-catch)
-        const statusText = validation.issues.length > 0 ? 'PENDIENTE DE REVISIÓN' : 'Pendiente de verificación';
-        const issuesText = validation.issues.length > 0
-          ? `\n⚠️ ${validation.issues.map((i) => `• ${i}`).join('\n⚠️ ')}`
-          : '';
-        await this.notifyAdminsVoucher(imageId, partner, detectedAmount, parsedVoucher, paymentMonth, paymentYear,
-          `📥 *Nuevo comprobante WhatsApp*\n` +
-          `━━━━━━━━━━━━━━━━━━\n` +
-          `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
-          `💰 Monto: *$${detectedAmount.toLocaleString('es-CO')}* — ${parsedVoucher.type.toUpperCase()}\n` +
-          `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
-          `💳 Estado: *${statusText}*\n` +
-          `━━━━━━━━━━━━━━━━━━` +
-          issuesText,
-        );
       } catch (paymentError: any) {
         this.logger.error('Error creating payment:', paymentError);
 
@@ -474,15 +446,6 @@ export class WhatsAppService {
         }
 
         // ALWAYS notify admins even on error, so they see the voucher
-        await this.notifyAdminsVoucher(imageId, partner, detectedAmount, parsedVoucher, paymentMonth, paymentYear,
-          `⚠️ *Comprobante con ERROR — WhatsApp*\n` +
-          `━━━━━━━━━━━━━━━━━━\n` +
-          `👤 *${partner.nombre}* (Rifa #${partner.numeroRifa})\n` +
-          `💰 Monto: *$${detectedAmount.toLocaleString('es-CO')}* — ${parsedVoucher.type?.toUpperCase() || '?'}\n` +
-          `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
-          `❌ Error: ${paymentError?.message || 'Error desconocido'}\n` +
-          `━━━━━━━━━━━━━━━━━━`,
-        );
       }
     } else {
       // Amount not detected
@@ -593,6 +556,26 @@ export class WhatsAppService {
       return;
     }
 
+    // ── MENU command — show options based on role (requires PIN) ──
+    if (textLower === 'menu' || textLower === 'menú' || textLower === 'opciones') {
+      if (authSession?.authenticated) {
+        await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
+        let menuMsg =
+          `📋 *Menú de opciones*\n\n` +
+          `ℹ️ Escribir *INFO* para ver tu información y estado de pago\n` +
+          `🧾 Escribir *RECIBO* para ver tu último comprobante\n`;
+
+        if (await this.isAdmin(from)) {
+          menuMsg += `📋 Escribir *COMPROBANTES* para ver todos los comprobantes del mes\n`;
+        }
+
+        await this.sendMessage(from, menuMsg);
+      } else {
+        await this.startAuthFlow(from);
+      }
+      return;
+    }
+
     // ── INFO command — requires PIN authentication ──
     if (textLower === 'info' || textLower === 'mi info' || textLower === 'mi información' || textLower === 'información') {
       if (authSession?.authenticated) {
@@ -604,15 +587,11 @@ export class WhatsAppService {
       return;
     }
 
-    // ── RECIBO command — send last voucher image (admin-only, requires PIN authentication) ──
+    // ── RECIBO command — send last voucher presigned URL (requires PIN authentication) ──
     if (textLower === 'recibo' || textLower === 'comprobante' || textLower === 'mi recibo' || textLower === 'mi comprobante') {
       if (authSession?.authenticated) {
         await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
-        if (await this.isAdmin(from)) {
-          await this.sendLastVoucherImage(from);
-        } else {
-          await this.sendMessage(from, `⚠️ Este comando está disponible solo para administradores.`);
-        }
+        await this.sendLastVoucherUrl(from);
       } else {
         await this.startAuthFlow(from);
       }
@@ -635,21 +614,14 @@ export class WhatsAppService {
     }
 
     // ── Default: guide user ──
-    let defaultMsg =
+    await this.sendMessage(
+      from,
       `🌿 *Hola, soy Nacho*\n\n` +
       `Puedes:\n` +
       `📸 Enviar una *foto* de tu comprobante (Nequi o Bancolombia) para registrar tu pago\n` +
-      `ℹ️ Escribir *INFO* para ver tu información y estado de pago\n`;
-
-    if (await this.isAdmin(from)) {
-      defaultMsg +=
-        `🧾 Escribir *RECIBO* para ver tu último comprobante\n` +
-        `📋 Escribir *COMPROBANTES* para ver todos los comprobantes del mes\n`;
-    }
-
-    defaultMsg += `\n_(Requiere PIN) · Solo se aceptan comprobantes de Nequi o Bancolombia._`;
-
-    await this.sendMessage(from, defaultMsg);
+      `ℹ️ Escribir *MENU* para ver más opciones\n\n` +
+      `_(Requiere PIN) · Solo se aceptan comprobantes de Nequi o Bancolombia._`,
+    );
   }
 
   // ─────────────────── AUTH HELPERS ───────────────────
@@ -724,13 +696,7 @@ export class WhatsAppService {
         `✅ *¡Bienvenido/a, ${name}!* 🎉\n\n` +
         `Soy *Nacho* 🌿 y estoy listo para ayudarte.\n\n` +
         `📸 Envía una foto de tu comprobante para registrar un pago\n` +
-        `ℹ️ Escribe *INFO* para ver tu información y estado de pago`;
-
-      if (await this.isAdmin(from)) {
-        welcomeMsg +=
-          `\n🧾 Escribe *RECIBO* para ver tu último comprobante` +
-          `\n📋 Escribe *COMPROBANTES* para ver todos los comprobantes del mes`;
-      }
+        `ℹ️ Escribe *MENU* para ver más opciones`;
 
       await this.sendMessage(from, welcomeMsg);
     } else {
@@ -767,24 +733,11 @@ export class WhatsAppService {
     const normalizedPhone = this.normalizePhone(from);
     const partner = await this.partnersService.findByCelular(normalizedPhone);
 
-    let greeting = `🌿 *¡Hola${partner ? `, ${partner.nombre}` : ''}! Soy Nacho, tu asistente de Natillera Chimba Verde* 🎉\n\n`;
-
-    if (partner) {
-      greeting += `Te identifiqué como *${partner.nombre}* 🎰 Rifa #${partner.numeroRifa}\n\n`;
-    }
-
-    greeting +=
-      `📸 Envía una *foto* de tu comprobante para registrar tu pago\n` +
-      `ℹ️ Escribe *INFO* para ver tu información y estado de pago\n`;
-
-    if (await this.isAdmin(from)) {
-      greeting +=
-        `🧾 Escribe *RECIBO* para ver tu último comprobante\n` +
-        `📋 Escribe *COMPROBANTES* para ver todos los comprobantes del mes\n`;
-    }
-
-    greeting +=
-      `\n━━━━━━━━━━━━━━━━━━\n` +
+    const greeting =
+      `🌿 *¡Hola${partner ? `, ${partner.nombre}` : ''}! Soy Nacho, tu asistente de Natillera Chimba Verde* 🎉\n\n` +
+      `📸 Envía una *foto* de tu comprobante de pago\n` +
+      `📝 Escribe *MENU* para ver las opciones disponibles\n\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
       `_Solo se aceptan comprobantes de Nequi o Bancolombia._`;
 
     await this.sendMessage(from, greeting);
@@ -866,10 +819,10 @@ export class WhatsAppService {
 
   /**
    * Send the last voucher image to the user via WhatsApp.
-   * Looks up the partner's most recent payment that has a voucherImageUrl.
-   * If the URL is an R2/public URL, sends it directly via `image.link`.
+   * Looks up the partner's most recent payment that has a voucher.
+   * Sends a text message with payment info and a presigned URL to view the image.
    */
-  private async sendLastVoucherImage(from: string): Promise<void> {
+  private async sendLastVoucherUrl(from: string): Promise<void> {
     const normalizedPhone = this.normalizePhone(from);
     const partner = await this.partnersService.findByCelular(normalizedPhone);
 
@@ -902,7 +855,9 @@ export class WhatsAppService {
       const statusEmoji = lastPayment.status === 'verified' ? '✅' : lastPayment.status === 'pending' ? '⏳' : '❌';
       const statusText = lastPayment.status === 'verified' ? 'Verificado' : lastPayment.status === 'pending' ? 'Pendiente' : 'Rechazado';
 
-      const caption =
+      const presignedUrl = await this.resolveVoucherUrl(lastPayment.voucherStorageKey, lastPayment.voucherImageUrl);
+
+      let msg =
         `🧾 *Último comprobante registrado*\n\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
         `👤 Socio: *${partner.nombre}*\n` +
@@ -910,16 +865,17 @@ export class WhatsAppService {
         `💰 Monto: *$${lastPayment.amount.toLocaleString('es-CO')}*\n` +
         `📅 Mes: *${this.getMonthName(lastPayment.month)} ${lastPayment.periodYear || ''}*\n` +
         `${statusEmoji} Estado: *${statusText}*\n` +
-        `━━━━━━━━━━━━━━━━━━`;
+        `━━━━━━━━━━━━━━━━━━\n\n`;
 
-      const imageUrl = await this.resolveVoucherUrl(lastPayment.voucherStorageKey, lastPayment.voucherImageUrl);
-      if (imageUrl) {
-        await this.sendImageByUrl(from, imageUrl, caption);
+      if (presignedUrl) {
+        msg += `🔗 *Ver comprobante:*\n${presignedUrl}\n\n_El enlace es válido por 1 hora._`;
       } else {
-        await this.sendMessage(from, caption + '\n\n⚠️ No se pudo obtener la imagen del comprobante.');
+        msg += `⚠️ No se pudo generar el enlace del comprobante.`;
       }
+
+      await this.sendMessage(from, msg);
     } catch (error) {
-      this.logger.error('Error sending last voucher image:', error);
+      this.logger.error('Error sending last voucher URL:', error);
       await this.sendMessage(
         from,
         `❌ Ocurrió un error al recuperar tu comprobante.\nPor favor intenta de nuevo.`,
@@ -962,45 +918,42 @@ export class WhatsAppService {
         return;
       }
 
-      // Send summary first
-      await this.sendMessage(
-        from,
-        `📋 *Comprobantes de ${this.getMonthName(month)} ${year}*\n\n` +
-        `Se encontraron *${withVoucher.length}* comprobante${withVoucher.length === 1 ? '' : 's'}.\n` +
-        `Enviando imágenes...`,
-      );
+      // Build a single text message with all vouchers and their presigned URLs
+      let msg =
+        `📋 *Comprobantes de ${this.getMonthName(month)} ${year}*\n` +
+        `Total: *${withVoucher.length}* comprobante${withVoucher.length === 1 ? '' : 's'}\n\n`;
 
-      // Send each voucher image (limit to avoid flooding)
-      const MAX_IMAGES = 20;
-      const toSend = withVoucher.slice(0, MAX_IMAGES);
-
-      for (const payment of toSend) {
+      for (const payment of withVoucher) {
         const statusEmoji = payment.status === 'verified' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
-        const statusText = payment.status === 'verified' ? 'Verificado' : payment.status === 'pending' ? 'Pendiente' : 'Rechazado';
-        const caption =
-          `👤 *${payment.partnerName || 'Socio'}*\n` +
-          `💰 $${payment.amount.toLocaleString('es-CO')}\n` +
-          `${statusEmoji} ${statusText}`;
+        const presignedUrl = await this.resolveVoucherUrl(payment.voucherStorageKey, payment.voucherImageUrl);
 
-        try {
-          const imageUrl = await this.resolveVoucherUrl(payment.voucherStorageKey, payment.voucherImageUrl);
-          if (imageUrl) {
-            await this.sendImageByUrl(from, imageUrl, caption);
-          } else {
-            await this.sendMessage(from, caption + '\n\n⚠️ No se pudo obtener la imagen.');
-          }
-          // Small delay between messages to avoid rate limits
-          await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (imgErr) {
-          this.logger.error(`Failed to send voucher image for payment ${payment.id}:`, imgErr);
+        msg += `${statusEmoji} *${payment.partnerName || 'Socio'}* — $${payment.amount.toLocaleString('es-CO')}\n`;
+        if (presignedUrl) {
+          msg += `🔗 ${presignedUrl}\n`;
+        } else {
+          msg += `⚠️ _Enlace no disponible_\n`;
         }
+        msg += `\n`;
       }
 
-      if (withVoucher.length > MAX_IMAGES) {
-        await this.sendMessage(
-          from,
-          `⚠️ Se mostraron los primeros ${MAX_IMAGES} de ${withVoucher.length} comprobantes.\nConsulta el panel web para ver todos.`,
-        );
+      msg += `━━━━━━━━━━━━━━━━━━\n_Los enlaces son válidos por 1 hora._`;
+
+      // WhatsApp max message length is ~65536 chars; split if needed
+      if (msg.length > 4096) {
+        // Send in chunks
+        const lines = msg.split('\n');
+        let chunk = '';
+        for (const line of lines) {
+          if ((chunk + '\n' + line).length > 4000 && chunk.length > 0) {
+            await this.sendMessage(from, chunk);
+            chunk = line;
+          } else {
+            chunk = chunk ? chunk + '\n' + line : line;
+          }
+        }
+        if (chunk) await this.sendMessage(from, chunk);
+      } else {
+        await this.sendMessage(from, msg);
       }
     } catch (error) {
       this.logger.error('Error sending monthly vouchers:', error);
@@ -1026,47 +979,6 @@ export class WhatsAppService {
     }
     // Fallback to stored public URL
     return fallbackUrl || null;
-  }
-
-  /**
-   * Send an image to a WhatsApp user using a public URL (e.g. from R2).
-   * Uses `image.link` instead of `image.id` — no need to upload to WhatsApp first.
-   */
-  private async sendImageByUrl(to: string, imageUrl: string, caption?: string): Promise<void> {
-    try {
-      const token = process.env.WHATSAPP_ACCESS_TOKEN;
-      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-      const response = await axios.post(
-        `${this.graphApiUrl}/${phoneNumberId}/messages`,
-        {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'image',
-          image: {
-            link: imageUrl,
-            ...(caption ? { caption } : {}),
-          },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-
-      const waMessageId = response.data?.messages?.[0]?.id || 'unknown';
-      this.logger.log(`Image by URL sent to ${to} — WA msg ID: ${waMessageId}`);
-    } catch (error: any) {
-      const errData = error?.response?.data || error?.message || error;
-      this.logger.error(`Error sending image by URL to ${to}:`, JSON.stringify(errData));
-
-      // Fallback: send the URL as a text message
-      if (caption) {
-        await this.sendMessage(to, `${caption}\n\n📎 ${imageUrl}`);
-      }
-    }
   }
 
   /**
@@ -1177,61 +1089,6 @@ export class WhatsAppService {
   }
 
   /**
-   * Notify all admin phones with a voucher image. This method NEVER throws —
-   * it catches all errors internally so callers can fire-and-forget.
-   * Includes sponsored partner info in the caption automatically.
-   */
-  private async notifyAdminsVoucher(
-    imageId: string,
-    partner: any,
-    detectedAmount: number,
-    parsedVoucher: any,
-    paymentMonth: number,
-    paymentYear: number,
-    captionOverride?: string,
-  ): Promise<void> {
-    try {
-      let caption = captionOverride || '';
-
-      // Try to append sponsored partners info to the caption
-      try {
-        const allPartners = await this.partnersService.findAll();
-        const sponsored = allPartners.filter(p => p.idPartnerPatrocinador === partner.id && p.activo);
-        if (sponsored.length > 0) {
-          const sponsoredText = `🫂 Patrocinados: ${sponsored.map(p => `*${p.nombre}* (#${p.numeroRifa})`).join(', ')}`;
-          // Insert before last ━━ separator if present, else append
-          const lastSep = caption.lastIndexOf('━━━━━━━━━━━━━━━━━━');
-          if (lastSep > 0) {
-            caption = caption.slice(0, lastSep) + sponsoredText + '\n' + caption.slice(lastSep);
-          } else {
-            caption += '\n' + sponsoredText;
-          }
-        }
-      } catch (partnerErr) {
-        this.logger.warn('Could not fetch sponsored partners for admin caption:', partnerErr);
-      }
-
-      // Truncate caption to WhatsApp max (1024 chars)
-      if (caption.length > 1024) {
-        caption = caption.slice(0, 1021) + '...';
-        this.logger.warn(`Admin caption truncated to 1024 chars for ${partner.nombre}`);
-      }
-
-      // Re-upload the received media so we get a send-ready media ID
-      const sendMediaId = await this.reuploadMedia(imageId);
-      if (!sendMediaId) {
-        this.logger.error(`Could not re-upload media for admin notification (original ID: ${imageId})`);
-        return;
-      }
-
-      await this.forwardImageToAdmins(sendMediaId, caption);
-      this.logger.log(`Admin notification sent for ${partner.nombre} (Rifa #${partner.numeroRifa})`);
-    } catch (notifyErr) {
-      this.logger.error('Failed to notify admins with voucher image:', notifyErr);
-    }
-  }
-
-  /**
    * Handle the user's response when asked whether a payment is for a sponsored partner.
    */
   private async handleSponsorChoice(from: string, text: string, choice: PendingSponsorChoice): Promise<void> {
@@ -1304,98 +1161,6 @@ export class WhatsAppService {
   }
 
   /**
-   * Get media URL from WhatsApp
-   */
-  /**
-   * Forward an image to a phone number using the WhatsApp media ID
-   */
-  private async sendImage(to: string, mediaId: string, caption?: string): Promise<void> {
-    try {
-      const token = process.env.WHATSAPP_ACCESS_TOKEN;
-      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-      const response = await axios.post(
-        `${this.graphApiUrl}/${phoneNumberId}/messages`,
-        {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'image',
-          image: { id: mediaId, ...(caption ? { caption } : {}) },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-
-      const waMessageId = response.data?.messages?.[0]?.id || 'unknown';
-      this.logger.log(`Image forwarded to ${to} — WA msg ID: ${waMessageId}`);
-    } catch (error: any) {
-      const errData = error?.response?.data || error?.message || error;
-      this.logger.error(`Error forwarding image to ${to}:`, JSON.stringify(errData));
-    }
-  }
-
-  /**
-   * Send a WhatsApp template message with an image header.
-   * Templates work outside the 24-hour conversation window.
-   * Template "voucher_notification" must exist in Meta Business Manager with:
-   *   - Header: IMAGE
-   *   - Body:   {{1}}
-   */
-  private async sendTemplateImage(to: string, mediaId: string, bodyText: string): Promise<void> {
-    try {
-      const token = process.env.WHATSAPP_ACCESS_TOKEN;
-      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-      const templateName = process.env.WHATSAPP_VOUCHER_TEMPLATE || 'voucher_notification';
-
-      // Truncate body param to 1024 chars (WhatsApp template param limit)
-      const truncatedBody = bodyText.length > 1024 ? bodyText.slice(0, 1021) + '...' : bodyText;
-
-      const response = await axios.post(
-        `${this.graphApiUrl}/${phoneNumberId}/messages`,
-        {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'template',
-          template: {
-            name: templateName,
-            language: { code: 'es_CO' },
-            components: [
-              {
-                type: 'header',
-                parameters: [
-                  { type: 'image', image: { id: mediaId } },
-                ],
-              },
-              {
-                type: 'body',
-                parameters: [
-                  { type: 'text', text: truncatedBody },
-                ],
-              },
-            ],
-          },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-
-      const waMessageId = response.data?.messages?.[0]?.id || 'unknown';
-      this.logger.log(`Template image sent to ${to} — WA msg ID: ${waMessageId}`);
-    } catch (error: any) {
-      const errData = error?.response?.data || error?.message || error;
-      this.logger.error(`Error sending template image to ${to}:`, JSON.stringify(errData));
-    }
-  }
-
-  /**
    * Return the list of admin phone numbers from the DB (users with role ADMIN).
    * Phone numbers are returned in WhatsApp E.164 format (e.g. "573122249196").
    */
@@ -1412,58 +1177,6 @@ export class WhatsAppService {
   private async isAdmin(from: string): Promise<boolean> {
     const phones = await this.getAdminPhones();
     return phones.includes(from);
-  }
-
-  /**
-   * Forward a WhatsApp-hosted image (by mediaId) to all admin phones.
-   * Uses template messages so delivery works outside the 24-hour window.
-   */
-  async forwardImageToAdmins(mediaId: string, caption?: string): Promise<void> {
-    const phones = await this.getAdminPhones();
-    if (phones.length === 0) {
-      this.logger.warn('No admin users found in the database — skipping forward');
-      return;
-    }
-    const bodyText = caption || 'Nuevo comprobante recibido';
-    await Promise.all(phones.map(phone => this.sendTemplateImage(phone, mediaId, bodyText)));
-  }
-
-  /**
-   * Upload a base64 image to WhatsApp's media API and return the resulting mediaId.
-   * Supports data URIs (data:image/jpeg;base64,...) or raw base64 strings.
-   * Returns null on failure so callers can gracefully skip forwarding.
-   */
-  async uploadMediaFromBase64(imageBase64: string): Promise<string | null> {
-    try {
-      const token = process.env.WHATSAPP_ACCESS_TOKEN;
-      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-      // Strip data URI prefix if present
-      const isPng = imageBase64.startsWith('data:image/png');
-      const mimeType = isPng ? 'image/png' : 'image/jpeg';
-      const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
-      const buffer = Buffer.from(base64Data, 'base64');
-
-      // Build multipart form using native Node 18 globals
-      const blob = new Blob([buffer], { type: mimeType });
-      const form = new FormData();
-      form.append('messaging_product', 'whatsapp');
-      form.append('type', mimeType);
-      form.append('file', blob, 'voucher.jpg');
-
-      const response = await axios.post(
-        `${this.graphApiUrl}/${phoneNumberId}/media`,
-        form,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-
-      const mediaId = response.data?.id;
-      this.logger.log(`Uploaded media to WhatsApp, mediaId: ${mediaId}`);
-      return mediaId || null;
-    } catch (error) {
-      this.logger.error('Error uploading media to WhatsApp:', error);
-      return null;
-    }
   }
 
   private async getMediaUrl(mediaId: string): Promise<string | null> {
@@ -1493,51 +1206,6 @@ export class WhatsAppService {
     const buffer = Buffer.from(downloadRes.data);
     const mimeType = (downloadRes.headers['content-type'] as string) || 'image/jpeg';
     return { buffer, mimeType };
-  }
-
-  /**
-   * Download a received WhatsApp media by its ID and re-upload it to get
-   * a media ID that is usable for sending outbound messages.
-   * Incoming media IDs are only guaranteed for downloading; to forward
-   * to other users we need a freshly uploaded media ID.
-   */
-  private async reuploadMedia(mediaId: string): Promise<string | null> {
-    try {
-      const token = process.env.WHATSAPP_ACCESS_TOKEN;
-      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-      // Step 1: Get temporary download URL
-      const mediaUrl = await this.getMediaUrl(mediaId);
-      if (!mediaUrl) {
-        this.logger.warn(`reuploadMedia: could not get download URL for ${mediaId}`);
-        return null;
-      }
-
-      // Step 2: Download the binary image
-      const { buffer, mimeType } = await this.downloadMedia(mediaUrl);
-      this.logger.log(`reuploadMedia: downloaded ${buffer.length} bytes (${mimeType})`);
-
-      // Step 3: Upload as new media
-      const blob = new Blob([buffer], { type: mimeType });
-      const form = new FormData();
-      form.append('messaging_product', 'whatsapp');
-      form.append('type', mimeType);
-      form.append('file', blob, 'voucher.jpg');
-
-      const uploadRes = await axios.post(
-        `${this.graphApiUrl}/${phoneNumberId}/media`,
-        form,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-
-      const newMediaId = uploadRes.data?.id;
-      this.logger.log(`reuploadMedia: ${mediaId} → ${newMediaId}`);
-      return newMediaId || null;
-    } catch (error: any) {
-      const errData = error?.response?.data || error?.message || error;
-      this.logger.error('reuploadMedia failed:', JSON.stringify(errData));
-      return null;
-    }
   }
 
   /**
