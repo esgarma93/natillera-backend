@@ -4,6 +4,7 @@ import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { UsersService } from '../../users/application/users.service';
 import { RedisService } from '../../redis/redis.service';
+import { StorageService } from '../../storage/storage.service';
 import { OcrService } from './ocr.service';
 import { VoucherParserService } from './voucher-parser.service';
 import axios from 'axios';
@@ -67,6 +68,7 @@ export class WhatsAppService {
     private readonly partnersService: PartnersService,
     private readonly usersService: UsersService,
     private readonly redisService: RedisService,
+    private readonly storageService: StorageService,
     private readonly ocrService: OcrService,
     private readonly voucherParserService: VoucherParserService,
   ) {}
@@ -139,6 +141,9 @@ export class WhatsAppService {
         return;
       }
 
+      // Download image binary for OCR + cloud storage
+      const { buffer: imageBuffer, mimeType: imageMimeType } = await this.downloadMedia(imageUrl);
+
       // Try to extract text using OCR and parse voucher
       const ocrResult = await this.ocrService.extractAmountFromImage(imageUrl);
       const parsedVoucher = this.voucherParserService.parseVoucher(ocrResult.rawText || '');
@@ -176,13 +181,28 @@ export class WhatsAppService {
       const currentYear = new Date().getFullYear();
       const detectedAmount = parsedVoucher.amount || ocrResult.amount;
 
+      // Upload voucher image to R2 cloud storage for persistence
+      let persistentImageUrl = imageUrl;
+      if (this.storageService.isEnabled() && imageBuffer) {
+        const storageKey = this.storageService.buildVoucherKey(
+          partner?.id || 'unknown',
+          parsedVoucher.type || 'voucher',
+          imageMimeType,
+        );
+        const r2Url = await this.storageService.uploadVoucher(imageBuffer, storageKey, imageMimeType);
+        if (r2Url) {
+          persistentImageUrl = r2Url;
+          this.logger.log(`Voucher stored in R2: ${storageKey}`);
+        }
+      }
+
       if (partner) {
-        await this.registerPaymentForPartner(from, partner, detectedAmount, parsedVoucher, imageUrl, imageId, messageId);
+        await this.registerPaymentForPartner(from, partner, detectedAmount, parsedVoucher, persistentImageUrl, imageId, messageId);
       } else {
         // Store pending session in Redis (TTL = 10 minutes, handled by Redis)
         await this.redisService.set(KEY_WA_PENDING + from, {
           imageId,
-          imageUrl,
+          imageUrl: persistentImageUrl,
           messageId,
           detectedAmount,
           parsedVoucher,
@@ -1187,6 +1207,20 @@ export class WhatsAppService {
   }
 
   /**
+   * Download a WhatsApp media file by its URL and return the buffer + mime type.
+   */
+  private async downloadMedia(mediaUrl: string): Promise<{ buffer: Buffer; mimeType: string }> {
+    const token = process.env.WHATSAPP_ACCESS_TOKEN;
+    const downloadRes = await axios.get(mediaUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+      responseType: 'arraybuffer',
+    });
+    const buffer = Buffer.from(downloadRes.data);
+    const mimeType = (downloadRes.headers['content-type'] as string) || 'image/jpeg';
+    return { buffer, mimeType };
+  }
+
+  /**
    * Download a received WhatsApp media by its ID and re-upload it to get
    * a media ID that is usable for sending outbound messages.
    * Incoming media IDs are only guaranteed for downloading; to forward
@@ -1205,13 +1239,7 @@ export class WhatsAppService {
       }
 
       // Step 2: Download the binary image
-      const downloadRes = await axios.get(mediaUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-        responseType: 'arraybuffer',
-      });
-
-      const buffer = Buffer.from(downloadRes.data);
-      const mimeType = (downloadRes.headers['content-type'] as string) || 'image/jpeg';
+      const { buffer, mimeType } = await this.downloadMedia(mediaUrl);
       this.logger.log(`reuploadMedia: downloaded ${buffer.length} bytes (${mimeType})`);
 
       // Step 3: Upload as new media

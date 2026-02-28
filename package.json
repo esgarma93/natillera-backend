@@ -8,6 +8,8 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1000.0",
+    "@aws-sdk/s3-request-presigner": "^3.1000.0",
     "@google-cloud/vision": "^4.3.3",
     "@nestjs/common": "^8.0.0",
     "@nestjs/core": "^8.0.0",
