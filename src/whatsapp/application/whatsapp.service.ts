@@ -886,7 +886,7 @@ export class WhatsAppService {
       // Get all payments for this partner, sorted by date (newest first)
       const payments = await this.paymentsService.findByPartnerId(partner.id);
       const withVoucher = payments
-        .filter(p => p.voucherImageUrl)
+        .filter(p => p.voucherImageUrl || p.voucherStorageKey)
         .sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime());
 
       if (withVoucher.length === 0) {
@@ -912,8 +912,12 @@ export class WhatsAppService {
         `${statusEmoji} Estado: *${statusText}*\n` +
         `━━━━━━━━━━━━━━━━━━`;
 
-      // Try to send the image from the stored URL
-      await this.sendImageByUrl(from, lastPayment.voucherImageUrl!, caption);
+      const imageUrl = await this.resolveVoucherUrl(lastPayment.voucherStorageKey, lastPayment.voucherImageUrl);
+      if (imageUrl) {
+        await this.sendImageByUrl(from, imageUrl, caption);
+      } else {
+        await this.sendMessage(from, caption + '\n\n⚠️ No se pudo obtener la imagen del comprobante.');
+      }
     } catch (error) {
       this.logger.error('Error sending last voucher image:', error);
       await this.sendMessage(
@@ -947,7 +951,7 @@ export class WhatsAppService {
       }
 
       const payments = await this.paymentsService.findByMonthAndYear(month, year);
-      const withVoucher = payments.filter(p => p.voucherImageUrl);
+      const withVoucher = payments.filter(p => p.voucherImageUrl || p.voucherStorageKey);
 
       if (withVoucher.length === 0) {
         await this.sendMessage(
@@ -979,7 +983,12 @@ export class WhatsAppService {
           `${statusEmoji} ${statusText}`;
 
         try {
-          await this.sendImageByUrl(from, payment.voucherImageUrl!, caption);
+          const imageUrl = await this.resolveVoucherUrl(payment.voucherStorageKey, payment.voucherImageUrl);
+          if (imageUrl) {
+            await this.sendImageByUrl(from, imageUrl, caption);
+          } else {
+            await this.sendMessage(from, caption + '\n\n⚠️ No se pudo obtener la imagen.');
+          }
           // Small delay between messages to avoid rate limits
           await new Promise(resolve => setTimeout(resolve, 500));
         } catch (imgErr) {
@@ -1000,6 +1009,23 @@ export class WhatsAppService {
         `❌ Ocurrió un error al consultar los comprobantes.\nPor favor intenta de nuevo.`,
       );
     }
+  }
+
+  /**
+   * Resolve the best accessible URL for a voucher image.
+   * Prefers a presigned R2 URL (valid for 1 hour) over the stored public URL.
+   */
+  private async resolveVoucherUrl(storageKey?: string, fallbackUrl?: string): Promise<string | null> {
+    // Try presigned URL from R2 first
+    if (storageKey && this.storageService.isEnabled()) {
+      const presigned = await this.storageService.getPresignedUrl(storageKey, 3600);
+      if (presigned) {
+        this.logger.log(`Resolved presigned URL for key: ${storageKey}`);
+        return presigned;
+      }
+    }
+    // Fallback to stored public URL
+    return fallbackUrl || null;
   }
 
   /**
