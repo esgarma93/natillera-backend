@@ -15,11 +15,28 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
     this.client = new Redis(url, {
       lazyConnect: true,
-      retryStrategy: (times) => Math.min(times * 100, 3000),
+      retryStrategy: (times) => Math.min(times * 500, 5000),
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true,
+      keepAlive: 30000,
+      connectTimeout: 10000,
+      reconnectOnError: (err) => {
+        const targetErrors = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED'];
+        return targetErrors.some((e) => err.message.includes(e));
+      },
     });
 
     this.client.on('connect', () => this.logger.log('Redis connected'));
-    this.client.on('error', (err) => this.logger.error('Redis error:', err));
+    this.client.on('reconnecting', (ms: number) =>
+      this.logger.warn(`Redis reconnecting in ${ms}ms`),
+    );
+    this.client.on('error', (err) => {
+      if (err.message?.includes('ECONNRESET')) {
+        this.logger.warn('Redis ECONNRESET — will reconnect automatically');
+      } else {
+        this.logger.error('Redis error:', err);
+      }
+    });
   }
 
   onModuleDestroy() {
