@@ -45,6 +45,11 @@ export class MongoUserRepository implements IUserRepository {
     return doc ? this.toDomain(doc) : null;
   }
 
+  async findByRole(role: UserRole): Promise<User[]> {
+    const docs = await this.userModel.find({ role, activo: true }).exec();
+    return docs.map((doc) => this.toDomain(doc));
+  }
+
   async create(user: User): Promise<User> {
     const created = new this.userModel({
       celular: user.celular,

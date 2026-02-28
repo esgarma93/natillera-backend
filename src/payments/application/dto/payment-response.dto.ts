@@ -16,6 +16,7 @@ export class PaymentResponseDto {
   pendingDescription?: string;
   voucherType?: string;
   voucherImageUrl?: string;
+  voucherStorageKey?: string;
   whatsappMessageId?: string;
   notes?: string;
   createdAt: Date;

@@ -7,6 +7,7 @@ import { RedisService } from '../../redis/redis.service';
 import { StorageService } from '../../storage/storage.service';
 import { OcrService } from './ocr.service';
 import { VoucherParserService } from './voucher-parser.service';
+import { UserRole } from '../../users/domain/user.entity';
 import axios from 'axios';
 
 // Redis key prefixes
@@ -28,6 +29,7 @@ interface PendingSession {
   detectedAmount: number | null;
   parsedVoucher: any;
   from: string;
+  storageKey?: string;
 }
 
 // Pending sponsor choice: stored while waiting for user to confirm sponsored partner
@@ -41,6 +43,7 @@ interface PendingSponsorChoice {
   originalPartnerId: string;
   originalPartnerName: string;
   originalPartnerMontoCuota: number;
+  storageKey?: string;
   sponsoredOptions: Array<{
     id: string;
     nombre: string;
@@ -183,6 +186,7 @@ export class WhatsAppService {
 
       // Upload voucher image to R2 cloud storage for persistence
       let persistentImageUrl = imageUrl;
+      let persistentStorageKey: string | undefined;
       if (this.storageService.isEnabled() && imageBuffer) {
         const storageKey = this.storageService.buildVoucherKey(
           partner?.id || 'unknown',
@@ -192,12 +196,13 @@ export class WhatsAppService {
         const r2Url = await this.storageService.uploadVoucher(imageBuffer, storageKey, imageMimeType);
         if (r2Url) {
           persistentImageUrl = r2Url;
+          persistentStorageKey = storageKey;
           this.logger.log(`Voucher stored in R2: ${storageKey}`);
         }
       }
 
       if (partner) {
-        await this.registerPaymentForPartner(from, partner, detectedAmount, parsedVoucher, persistentImageUrl, imageId, messageId);
+        await this.registerPaymentForPartner(from, partner, detectedAmount, parsedVoucher, persistentImageUrl, imageId, messageId, false, persistentStorageKey);
       } else {
         // Store pending session in Redis (TTL = 10 minutes, handled by Redis)
         await this.redisService.set(KEY_WA_PENDING + from, {
@@ -207,6 +212,7 @@ export class WhatsAppService {
           detectedAmount,
           parsedVoucher,
           from,
+          storageKey: persistentStorageKey,
         }, PENDING_SESSION_TTL);
 
         const amountLine = detectedAmount
@@ -249,6 +255,7 @@ export class WhatsAppService {
     imageId: string,
     messageId: string,
     skipSponsorCheck: boolean = false,
+    storageKey?: string,
   ): Promise<void> {
     // Use voucher date to determine payment month (same logic as createFromWhatsAppWithValidation)
     const voucherDate = parsedVoucher?.date || null;
@@ -284,6 +291,7 @@ export class WhatsAppService {
             originalPartnerId: partner.id,
             originalPartnerName: partner.nombre,
             originalPartnerMontoCuota: partner.montoCuota,
+            storageKey,
             sponsoredOptions: matchingSponsored.map(p => ({
               id: p.id, nombre: p.nombre, numeroRifa: p.numeroRifa, montoCuota: p.montoCuota,
             })),
@@ -399,6 +407,7 @@ export class WhatsAppService {
           parsedVoucher.type,
           parsedVoucher.date,
           validation.issues,
+          storageKey,
         );
 
         this.logger.log(`Payment created for ${partner.nombre}, status: ${paymentResult.status}`);
@@ -594,15 +603,52 @@ export class WhatsAppService {
       return;
     }
 
+    // ── RECIBO command — send last voucher image (admin-only, requires PIN authentication) ──
+    if (textLower === 'recibo' || textLower === 'comprobante' || textLower === 'mi recibo' || textLower === 'mi comprobante') {
+      if (authSession?.authenticated) {
+        await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
+        if (await this.isAdmin(from)) {
+          await this.sendLastVoucherImage(from);
+        } else {
+          await this.sendMessage(from, `⚠️ Este comando está disponible solo para administradores.`);
+        }
+      } else {
+        await this.startAuthFlow(from);
+      }
+      return;
+    }
+
+    // ── COMPROBANTES command — admin queries all vouchers for a month ──
+    if (textLower.startsWith('comprobantes')) {
+      if (authSession?.authenticated) {
+        await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
+        if (await this.isAdmin(from)) {
+          await this.sendMonthlyVouchers(from, text);
+        } else {
+          await this.sendMessage(from, `⚠️ Este comando está disponible solo para administradores.`);
+        }
+      } else {
+        await this.startAuthFlow(from);
+      }
+      return;
+    }
+
     // ── Default: guide user ──
-    await this.sendMessage(
-      from,
+    let defaultMsg =
       `🌿 *Hola, soy Nacho*\n\n` +
       `Puedes:\n` +
       `📸 Enviar una *foto* de tu comprobante (Nequi o Bancolombia) para registrar tu pago\n` +
-      `ℹ️ Escribir *INFO* para ver tu información y estado de pago (requiere PIN)\n\n` +
-      `_Solo se aceptan comprobantes de Nequi o Bancolombia._`,
-    );
+      `ℹ️ Escribir *INFO* para ver tu información y estado de pago\n`;
+
+    if (await this.isAdmin(from)) {
+      defaultMsg +=
+        `🧾 Escribir *RECIBO* para ver tu último comprobante\n` +
+        `📋 Escribir *COMPROBANTES* para ver todos los comprobantes del mes\n`;
+    }
+
+    defaultMsg += `\n_(Requiere PIN) · Solo se aceptan comprobantes de Nequi o Bancolombia._`;
+
+    await this.sendMessage(from, defaultMsg);
   }
 
   // ─────────────────── AUTH HELPERS ───────────────────
@@ -673,13 +719,19 @@ export class WhatsAppService {
       const partner = await this.partnersService.findByCelular(normalizedPhone);
       const name = partner?.nombre ?? user.celular;
 
-      await this.sendMessage(
-        from,
+      let welcomeMsg =
         `✅ *¡Bienvenido/a, ${name}!* 🎉\n\n` +
         `Soy *Nacho* 🌿 y estoy listo para ayudarte.\n\n` +
-        `📸 Envía una foto de tu comprobante para registrar un pago,\n` +
-        `o escribe *INFO* para ver tu información y estado de pago.`,
-      );
+        `📸 Envía una foto de tu comprobante para registrar un pago\n` +
+        `ℹ️ Escribe *INFO* para ver tu información y estado de pago`;
+
+      if (await this.isAdmin(from)) {
+        welcomeMsg +=
+          `\n🧾 Escribe *RECIBO* para ver tu último comprobante` +
+          `\n📋 Escribe *COMPROBANTES* para ver todos los comprobantes del mes`;
+      }
+
+      await this.sendMessage(from, welcomeMsg);
     } else {
       // Failed attempt
       session.attempts += 1;
@@ -722,8 +774,16 @@ export class WhatsAppService {
 
     greeting +=
       `📸 Envía una *foto* de tu comprobante para registrar tu pago\n` +
-      `ℹ️ Escribe *INFO* para ver tu información y estado de pago\n\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
+      `ℹ️ Escribe *INFO* para ver tu información y estado de pago\n`;
+
+    if (await this.isAdmin(from)) {
+      greeting +=
+        `🧾 Escribe *RECIBO* para ver tu último comprobante\n` +
+        `📋 Escribe *COMPROBANTES* para ver todos los comprobantes del mes\n`;
+    }
+
+    greeting +=
+      `\n━━━━━━━━━━━━━━━━━━\n` +
       `_Solo se aceptan comprobantes de Nequi o Bancolombia._`;
 
     await this.sendMessage(from, greeting);
@@ -801,6 +861,185 @@ export class WhatsAppService {
     }
 
     await this.sendMessage(from, infoMsg);
+  }
+
+  /**
+   * Send the last voucher image to the user via WhatsApp.
+   * Looks up the partner's most recent payment that has a voucherImageUrl.
+   * If the URL is an R2/public URL, sends it directly via `image.link`.
+   */
+  private async sendLastVoucherImage(from: string): Promise<void> {
+    const normalizedPhone = this.normalizePhone(from);
+    const partner = await this.partnersService.findByCelular(normalizedPhone);
+
+    if (!partner) {
+      await this.sendMessage(
+        from,
+        `⚠️ No encontré un socio asociado a tu número *${normalizedPhone}*.\n\n` +
+          `Contacta al administrador para registrar tu número en el sistema.`,
+      );
+      return;
+    }
+
+    try {
+      // Get all payments for this partner, sorted by date (newest first)
+      const payments = await this.paymentsService.findByPartnerId(partner.id);
+      const withVoucher = payments
+        .filter(p => p.voucherImageUrl)
+        .sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime());
+
+      if (withVoucher.length === 0) {
+        await this.sendMessage(
+          from,
+          `📋 No encontré comprobantes registrados para *${partner.nombre}*.\n\n` +
+            `📸 Envía una foto de tu comprobante para registrar tu primer pago.`,
+        );
+        return;
+      }
+
+      const lastPayment = withVoucher[0];
+      const statusEmoji = lastPayment.status === 'verified' ? '✅' : lastPayment.status === 'pending' ? '⏳' : '❌';
+      const statusText = lastPayment.status === 'verified' ? 'Verificado' : lastPayment.status === 'pending' ? 'Pendiente' : 'Rechazado';
+
+      const caption =
+        `🧾 *Último comprobante registrado*\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `👤 Socio: *${partner.nombre}*\n` +
+        `🎰 Rifa: *#${partner.numeroRifa}*\n` +
+        `💰 Monto: *$${lastPayment.amount.toLocaleString('es-CO')}*\n` +
+        `📅 Mes: *${this.getMonthName(lastPayment.month)} ${lastPayment.periodYear || ''}*\n` +
+        `${statusEmoji} Estado: *${statusText}*\n` +
+        `━━━━━━━━━━━━━━━━━━`;
+
+      // Try to send the image from the stored URL
+      await this.sendImageByUrl(from, lastPayment.voucherImageUrl!, caption);
+    } catch (error) {
+      this.logger.error('Error sending last voucher image:', error);
+      await this.sendMessage(
+        from,
+        `❌ Ocurrió un error al recuperar tu comprobante.\nPor favor intenta de nuevo.`,
+      );
+    }
+  }
+
+  /**
+   * Admin command: send all voucher images for a given month.
+   * Usage: COMPROBANTES (current month) or COMPROBANTES <month_number> (e.g. COMPROBANTES 6)
+   */
+  private async sendMonthlyVouchers(from: string, rawText: string): Promise<void> {
+    try {
+      // Parse optional month number from text (e.g. "COMPROBANTES 6" → month 6)
+      const parts = rawText.trim().split(/\s+/);
+      const now = new Date();
+      let month = now.getMonth() + 1;
+      let year = now.getFullYear();
+
+      if (parts.length >= 2) {
+        const parsed = parseInt(parts[1], 10);
+        if (parsed >= 1 && parsed <= 12) {
+          month = parsed;
+          // If user queries a future month, assume previous year
+          if (month > now.getMonth() + 1) {
+            year = now.getFullYear() - 1;
+          }
+        }
+      }
+
+      const payments = await this.paymentsService.findByMonthAndYear(month, year);
+      const withVoucher = payments.filter(p => p.voucherImageUrl);
+
+      if (withVoucher.length === 0) {
+        await this.sendMessage(
+          from,
+          `📋 No se encontraron comprobantes para *${this.getMonthName(month)} ${year}*.\n\n` +
+          `_Usa *COMPROBANTES <mes>* (ej: COMPROBANTES 6) para consultar otro mes._`,
+        );
+        return;
+      }
+
+      // Send summary first
+      await this.sendMessage(
+        from,
+        `📋 *Comprobantes de ${this.getMonthName(month)} ${year}*\n\n` +
+        `Se encontraron *${withVoucher.length}* comprobante${withVoucher.length === 1 ? '' : 's'}.\n` +
+        `Enviando imágenes...`,
+      );
+
+      // Send each voucher image (limit to avoid flooding)
+      const MAX_IMAGES = 20;
+      const toSend = withVoucher.slice(0, MAX_IMAGES);
+
+      for (const payment of toSend) {
+        const statusEmoji = payment.status === 'verified' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
+        const statusText = payment.status === 'verified' ? 'Verificado' : payment.status === 'pending' ? 'Pendiente' : 'Rechazado';
+        const caption =
+          `👤 *${payment.partnerName || 'Socio'}*\n` +
+          `💰 $${payment.amount.toLocaleString('es-CO')}\n` +
+          `${statusEmoji} ${statusText}`;
+
+        try {
+          await this.sendImageByUrl(from, payment.voucherImageUrl!, caption);
+          // Small delay between messages to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (imgErr) {
+          this.logger.error(`Failed to send voucher image for payment ${payment.id}:`, imgErr);
+        }
+      }
+
+      if (withVoucher.length > MAX_IMAGES) {
+        await this.sendMessage(
+          from,
+          `⚠️ Se mostraron los primeros ${MAX_IMAGES} de ${withVoucher.length} comprobantes.\nConsulta el panel web para ver todos.`,
+        );
+      }
+    } catch (error) {
+      this.logger.error('Error sending monthly vouchers:', error);
+      await this.sendMessage(
+        from,
+        `❌ Ocurrió un error al consultar los comprobantes.\nPor favor intenta de nuevo.`,
+      );
+    }
+  }
+
+  /**
+   * Send an image to a WhatsApp user using a public URL (e.g. from R2).
+   * Uses `image.link` instead of `image.id` — no need to upload to WhatsApp first.
+   */
+  private async sendImageByUrl(to: string, imageUrl: string, caption?: string): Promise<void> {
+    try {
+      const token = process.env.WHATSAPP_ACCESS_TOKEN;
+      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+      const response = await axios.post(
+        `${this.graphApiUrl}/${phoneNumberId}/messages`,
+        {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'image',
+          image: {
+            link: imageUrl,
+            ...(caption ? { caption } : {}),
+          },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      const waMessageId = response.data?.messages?.[0]?.id || 'unknown';
+      this.logger.log(`Image by URL sent to ${to} — WA msg ID: ${waMessageId}`);
+    } catch (error: any) {
+      const errData = error?.response?.data || error?.message || error;
+      this.logger.error(`Error sending image by URL to ${to}:`, JSON.stringify(errData));
+
+      // Fallback: send the URL as a text message
+      if (caption) {
+        await this.sendMessage(to, `${caption}\n\n📎 ${imageUrl}`);
+      }
+    }
   }
 
   /**
@@ -886,7 +1125,7 @@ export class WhatsAppService {
       return;
     }
 
-    await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId);
+    await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId, false, session.storageKey);
   }
 
   /**
@@ -907,7 +1146,7 @@ export class WhatsAppService {
       return;
     }
 
-    await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId);
+    await this.registerPaymentForPartner(from, partner, session.detectedAmount, session.parsedVoucher, session.imageUrl, session.imageId, session.messageId, false, session.storageKey);
   }
 
   /**
@@ -980,7 +1219,7 @@ export class WhatsAppService {
         if (partner) {
           await this.registerPaymentForPartner(
             from, partner, choice.detectedAmount, choice.parsedVoucher,
-            choice.imageUrl, choice.imageId, choice.messageId, true,
+            choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
           );
         }
       } else if (textLower === 'no' || textLower === '2') {
@@ -989,7 +1228,7 @@ export class WhatsAppService {
         if (partner) {
           await this.registerPaymentForPartner(
             from, partner, choice.detectedAmount, choice.parsedVoucher,
-            choice.imageUrl, choice.imageId, choice.messageId, true,
+            choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
           );
         }
       } else {
@@ -1009,7 +1248,7 @@ export class WhatsAppService {
         if (partner) {
           await this.registerPaymentForPartner(
             from, partner, choice.detectedAmount, choice.parsedVoucher,
-            choice.imageUrl, choice.imageId, choice.messageId, true,
+            choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
           );
         }
       } else {
@@ -1021,7 +1260,7 @@ export class WhatsAppService {
           if (partner) {
             await this.registerPaymentForPartner(
               from, partner, choice.detectedAmount, choice.parsedVoucher,
-              choice.imageUrl, choice.imageId, choice.messageId, true,
+              choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
             );
           }
         } else {
@@ -1130,13 +1369,22 @@ export class WhatsAppService {
   }
 
   /**
-   * Return the list of admin phone numbers from the env var.
-   * WHATSAPP_NOTIFICATION_PHONES should be a comma-separated list of E.164 numbers without the '+' sign.
-   * Example: "573122249196,573001234567"
+   * Return the list of admin phone numbers from the DB (users with role ADMIN).
+   * Phone numbers are returned in WhatsApp E.164 format (e.g. "573122249196").
    */
-  private getAdminPhones(): string[] {
-    const raw = process.env.WHATSAPP_NOTIFICATION_PHONES || '';
-    return raw.split(',').map(p => p.trim()).filter(p => p.length > 0);
+  private async getAdminPhones(): Promise<string[]> {
+    const admins = await this.usersService.findByRole(UserRole.ADMIN);
+    return admins
+      .map(u => u.celular ? `57${u.celular}` : '')
+      .filter(p => p.length > 0);
+  }
+
+  /**
+   * Check if a WhatsApp phone number (E.164 without '+') belongs to an admin user.
+   */
+  private async isAdmin(from: string): Promise<boolean> {
+    const phones = await this.getAdminPhones();
+    return phones.includes(from);
   }
 
   /**
@@ -1144,9 +1392,9 @@ export class WhatsAppService {
    * Uses template messages so delivery works outside the 24-hour window.
    */
   async forwardImageToAdmins(mediaId: string, caption?: string): Promise<void> {
-    const phones = this.getAdminPhones();
+    const phones = await this.getAdminPhones();
     if (phones.length === 0) {
-      this.logger.warn('No admin phones configured in WHATSAPP_NOTIFICATION_PHONES — skipping forward');
+      this.logger.warn('No admin users found in the database — skipping forward');
       return;
     }
     const bodyText = caption || 'Nuevo comprobante recibido';

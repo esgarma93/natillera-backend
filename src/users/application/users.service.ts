@@ -53,6 +53,13 @@ export class UsersService {
     return this.userRepository.findByCelular(celular);
   }
 
+  /**
+   * Find all active users with a given role (e.g. ADMIN).
+   */
+  async findByRole(role: UserRole): Promise<User[]> {
+    return this.userRepository.findByRole(role);
+  }
+
   async create(dto: CreateUserDto): Promise<UserResponseDto> {
     // Check if user already exists
     const existingByCelular = await this.userRepository.findByCelular(dto.celular);

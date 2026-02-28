@@ -178,6 +178,7 @@ export class PaymentsService {
     voucherType: string,
     voucherDate: Date | null,
     validationIssues: string[],
+    voucherStorageKey?: string,
   ): Promise<PaymentResponseDto> {
     // Get active period
     const activePeriod = await this.periodsService.getActivePeriod();
@@ -224,6 +225,7 @@ export class PaymentsService {
       pendingDescription,
       voucherType,
       voucherImageUrl,
+      voucherStorageKey,
       whatsappMessageId,
       notes: `Payment received via WhatsApp - ${voucherType.toUpperCase()}`,
     });
@@ -436,6 +438,7 @@ export class PaymentsService {
       pendingDescription: payment.pendingDescription,
       voucherType: payment.voucherType,
       voucherImageUrl: payment.voucherImageUrl,
+      voucherStorageKey: payment.voucherStorageKey,
       whatsappMessageId: payment.whatsappMessageId,
       notes: payment.notes,
       createdAt: payment.createdAt,

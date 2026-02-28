@@ -113,6 +113,7 @@ export class MongoPaymentRepository implements PaymentRepository {
       pendingDescription: doc.pendingDescription,
       voucherType: doc.voucherType,
       voucherImageUrl: doc.voucherImageUrl,
+      voucherStorageKey: doc.voucherStorageKey,
       whatsappMessageId: doc.whatsappMessageId,
       notes: doc.notes,
       createdAt: doc.createdAt,

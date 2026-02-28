@@ -19,6 +19,7 @@ export interface IPayment {
   pendingDescription?: string;
   voucherType?: string;
   voucherImageUrl?: string;
+  voucherStorageKey?: string;
   whatsappMessageId?: string;
   notes?: string;
   createdAt: Date;
@@ -40,6 +41,7 @@ export class Payment implements IPayment {
   pendingDescription?: string;
   voucherType?: string;
   voucherImageUrl?: string;
+  voucherStorageKey?: string;
   whatsappMessageId?: string;
   notes?: string;
   createdAt: Date;
@@ -60,6 +62,7 @@ export class Payment implements IPayment {
     this.pendingDescription = partial.pendingDescription;
     this.voucherType = partial.voucherType;
     this.voucherImageUrl = partial.voucherImageUrl;
+    this.voucherStorageKey = partial.voucherStorageKey;
     this.whatsappMessageId = partial.whatsappMessageId;
     this.notes = partial.notes;
     this.createdAt = partial.createdAt || new Date();

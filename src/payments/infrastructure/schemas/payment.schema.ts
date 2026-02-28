@@ -46,6 +46,9 @@ export class PaymentSchema {
   voucherImageUrl: string;
 
   @Prop()
+  voucherStorageKey: string;
+
+  @Prop()
   whatsappMessageId: string;
 
   @Prop()

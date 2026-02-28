@@ -1,10 +1,11 @@
-import { User } from './user.entity';
+import { User, UserRole } from './user.entity';
 
 export interface IUserRepository {
   findAll(): Promise<User[]>;
   findById(id: string): Promise<User | null>;
   findByCelular(celular: string): Promise<User | null>;
   findByPartnerId(partnerId: string): Promise<User | null>;
+  findByRole(role: UserRole): Promise<User[]>;
   create(user: User): Promise<User>;
   update(id: string, user: Partial<User>): Promise<User | null>;
   delete(id: string): Promise<boolean>;
