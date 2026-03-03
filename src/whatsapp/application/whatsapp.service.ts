@@ -1188,9 +1188,10 @@ export class WhatsAppService {
   }
 
   /**
-   * Cron: notify unpaid active partners on day 1 and day 5 of each month at 9:00 AM
+   * Cron: notify unpaid active partners on day 5 of each month at 9:00 AM.
+   * Only notifies partners who have NOT paid for the current month.
    */
-  @Cron('0 9 1,5 * *')
+  @Cron('0 9 5 * *')
   async notifyUnpaidPartners(): Promise<void> {
     const now = new Date();
     const month = now.getMonth() + 1;
@@ -1208,11 +1209,13 @@ export class WhatsAppService {
 
       let notified = 0;
       for (const partner of activePartners) {
-        const hasPaid = payments.some(
+        // Check if partner already paid for the CURRENT month (verified or pending)
+        const hasPaidCurrentMonth = payments.some(
           p => p.partnerId === partner.id && (p.status === 'verified' || p.status === 'pending'),
         );
 
-        if (!hasPaid) {
+        // Only notify if the partner has NOT paid for the current month
+        if (!hasPaidCurrentMonth) {
           const whatsappNumber = `57${partner.celular!.replace(/\D/g, '')}`;
           try {
             await this.sendMessage(
