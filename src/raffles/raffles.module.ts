@@ -8,6 +8,7 @@ import { MongoMonthlyRaffleRepository } from './infrastructure/repositories/mong
 import { PartnersModule } from '../partners/partners.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { WhatsAppModule } from '../whatsapp/whatsapp.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { WhatsAppModule } from '../whatsapp/whatsapp.module';
     ScheduleModule.forRoot(),
     PartnersModule,
     PaymentsModule,
+    UsersModule,
     forwardRef(() => WhatsAppModule),
   ],
   controllers: [RafflesController],

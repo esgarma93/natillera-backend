@@ -6,6 +6,8 @@ import { MonthlyRaffleResponseDto } from './dto/monthly-raffle-response.dto';
 import { PartnersService } from '../../partners/application/partners.service';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { WhatsAppService } from '../../whatsapp/application/whatsapp.service';
+import { UsersService } from '../../users/application/users.service';
+import { UserRole } from '../../users/domain/user.entity';
 import * as cheerio from 'cheerio';
 
 @Injectable()
@@ -25,6 +27,7 @@ export class RafflesService {
     private readonly paymentsService: PaymentsService,
     @Inject(forwardRef(() => WhatsAppService))
     private readonly whatsAppService: WhatsAppService,
+    private readonly usersService: UsersService,
   ) {}
 
   /**
@@ -196,12 +199,12 @@ export class RafflesService {
         `Winner found! ${winner.winnerName} (#${winner.winnerRaffleNumber}) wins $${prizeAmount.toLocaleString()}`
       );
 
+      const monthName = this.MONTH_NAMES[month];
+
       // Notify winner via WhatsApp if they have a registered phone number
       if (winner.winnerCelular) {
         try {
-          // Add Colombian country prefix (57) for WhatsApp
           const whatsappNumber = `57${winner.winnerCelular.replace(/\D/g, '')}`;
-          const monthName = this.MONTH_NAMES[month];
 
           await this.whatsAppService.sendMessage(
             whatsappNumber,
@@ -223,30 +226,56 @@ export class RafflesService {
       } else {
         this.logger.warn(`Winner ${winner.winnerName} has no registered phone number — WhatsApp notification skipped`);
       }
+
+      // Notify all admins about the winner
+      try {
+        const adminPhones = await this.getAdminPhones();
+        for (const adminPhone of adminPhones) {
+          await this.whatsAppService.sendMessage(
+            adminPhone,
+            `🏆 *¡Tenemos ganador!*\n\n` +
+            `Se realizó el sorteo de *${monthName} ${year}* y tenemos ganador.\n\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `👤 Ganador: *${winner.winnerName}*\n` +
+            `🎰 Número de rifa: *#${winner.winnerRaffleNumber}*\n` +
+            `📱 Cel: *${winner.winnerCelular || 'No registrado'}*\n` +
+            `🔢 Número Lotería Medellín: *${lotteryNumber}*\n` +
+            `💰 Premio: *$${prizeAmount.toLocaleString('es-CO')}*\n` +
+            `💰 Recaudado total: *$${totalCollected.toLocaleString('es-CO')}*\n` +
+            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `_— Nacho, asistente de Natillera Chimba Verde 🌿_`,
+          );
+        }
+        this.logger.log(`Winner notification sent to ${adminPhones.length} admin(s)`);
+      } catch (notifyError) {
+        this.logger.error('Failed to send winner notification to admins:', notifyError);
+      }
     } else {
       this.logger.log(`No winner for ${month}/${year}. Amount remains in natillera: $${remainingAmount.toLocaleString()}`);
 
-      // Notify admin when there's no winner
+      // Notify all admins when there's no winner
       try {
-        const adminWhatsapp = '573122249196';
+        const adminPhones = await this.getAdminPhones();
         const monthName = this.MONTH_NAMES[month];
 
-        await this.whatsAppService.sendMessage(
-          adminWhatsapp,
-          `😔 *Sin ganador este mes*\n\n` +
-          `Se realizó el sorteo de *${monthName} ${year}* y no hubo ganador.\n\n` +
-          `━━━━━━━━━━━━━━━━━━\n` +
-          `🔢 Número Lotería Medellín: *${lotteryNumber}*\n` +
-          `🎰 Últimas dos cifras: *${winningDigits}*\n` +
-          `💰 Monto acumulado: *$${remainingAmount.toLocaleString('es-CO')}*\n` +
-          `━━━━━━━━━━━━━━━━━━\n\n` +
-          `El monto queda acumulado para el próximo mes. 🏦\n\n` +
-          `_— Nacho, asistente de Natillera Chimba Verde 🌿_`,
-        );
+        for (const adminPhone of adminPhones) {
+          await this.whatsAppService.sendMessage(
+            adminPhone,
+            `😔 *Sin ganador este mes*\n\n` +
+            `Se realizó el sorteo de *${monthName} ${year}* y no hubo ganador.\n\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `🔢 Número Lotería Medellín: *${lotteryNumber}*\n` +
+            `🎰 Últimas dos cifras: *${winningDigits}*\n` +
+            `💰 Monto acumulado: *$${remainingAmount.toLocaleString('es-CO')}*\n` +
+            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `El monto queda acumulado para el próximo mes. 🏦\n\n` +
+            `_— Nacho, asistente de Natillera Chimba Verde 🌿_`,
+          );
+        }
 
-        this.logger.log(`No-winner notification sent to admin (${adminWhatsapp})`);
+        this.logger.log(`No-winner notification sent to ${adminPhones.length} admin(s)`);
       } catch (notifyError) {
-        this.logger.error('Failed to send no-winner notification to admin:', notifyError);
+        this.logger.error('Failed to send no-winner notification to admins:', notifyError);
       }
     }
 
@@ -254,35 +283,50 @@ export class RafflesService {
   }
 
   /**
-   * Cron job: Run every Saturday at 00:00 AM to check if it's the Saturday after last Friday
+   * Cron job: Run every Saturday at 10:00 AM to check if it's the Saturday after last Friday of the month.
+   * Checks both current month (when last Friday falls on the last day) and previous month.
    */
-  @Cron('0 0 * * 6') // Every Saturday at 00:00
+  @Cron('0 10 * * 6') // Every Saturday at 10:00 AM
   async handleRaffleDraw() {
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
-    
-    // Check if today is the Saturday after last Friday of previous month
+
+    // Check current month first: is today the Saturday after the last Friday of this month?
+    const expectedSaturdayCurrent = this.getSaturdayAfterLastFriday(currentMonth, currentYear);
+    const isCurrentMonthDay =
+      now.getDate() === expectedSaturdayCurrent.getDate() &&
+      now.getMonth() === expectedSaturdayCurrent.getMonth() &&
+      now.getFullYear() === expectedSaturdayCurrent.getFullYear();
+
+    if (isCurrentMonthDay) {
+      this.logger.log(`Running automatic raffle draw for ${this.MONTH_NAMES[currentMonth]} ${currentYear}`);
+      try {
+        await this.processRaffleDraw(currentMonth, currentYear);
+      } catch (error) {
+        this.logger.error(`Error processing automatic raffle draw:`, error);
+      }
+      return;
+    }
+
+    // Check previous month: is today the Saturday after the last Friday of previous month?
     const previousMonth = currentMonth === 1 ? 12 : currentMonth - 1;
     const previousYear = currentMonth === 1 ? currentYear - 1 : currentYear;
-    
-    const expectedSaturday = this.getSaturdayAfterLastFriday(previousMonth, previousYear);
-    
-    // Compare dates (ignore time)
-    const isExpectedDay = 
-      now.getDate() === expectedSaturday.getDate() &&
-      now.getMonth() === expectedSaturday.getMonth() &&
-      now.getFullYear() === expectedSaturday.getFullYear();
+    const expectedSaturdayPrev = this.getSaturdayAfterLastFriday(previousMonth, previousYear);
+    const isPreviousMonthDay =
+      now.getDate() === expectedSaturdayPrev.getDate() &&
+      now.getMonth() === expectedSaturdayPrev.getMonth() &&
+      now.getFullYear() === expectedSaturdayPrev.getFullYear();
 
-    if (isExpectedDay) {
-      this.logger.log(`Running automatic raffle draw for ${previousMonth}/${previousYear}`);
+    if (isPreviousMonthDay) {
+      this.logger.log(`Running automatic raffle draw for ${this.MONTH_NAMES[previousMonth]} ${previousYear}`);
       try {
         await this.processRaffleDraw(previousMonth, previousYear);
       } catch (error) {
         this.logger.error(`Error processing automatic raffle draw:`, error);
       }
     } else {
-      this.logger.debug(`Today is not raffle draw day. Expected: ${expectedSaturday.toDateString()}`);
+      this.logger.debug(`Today is not raffle draw day. Checked: ${expectedSaturdayCurrent.toDateString()} and ${expectedSaturdayPrev.toDateString()}`);
     }
   }
 
@@ -316,6 +360,17 @@ export class RafflesService {
   async triggerRaffleDraw(month: number, year: number): Promise<MonthlyRaffleResponseDto> {
     const raffle = await this.processRaffleDraw(month, year);
     return this.toResponseDto(raffle);
+  }
+
+  /**
+   * Return the list of admin phone numbers from the DB (users with role ADMIN).
+   * Phone numbers are returned in WhatsApp E.164 format (e.g. "573122249196").
+   */
+  private async getAdminPhones(): Promise<string[]> {
+    const admins = await this.usersService.findByRole(UserRole.ADMIN);
+    return admins
+      .map(u => u.celular ? `57${u.celular}` : '')
+      .filter(p => p.length > 0);
   }
 
   /**
