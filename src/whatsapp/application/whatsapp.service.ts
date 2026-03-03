@@ -65,10 +65,10 @@ interface PendingMonthChoice {
   messageId: string;
   storageKey?: string;
   skipSponsorCheck: boolean;
-  currentMonth: number;
-  currentYear: number;
-  nextMonth: number;
-  nextYear: number;
+  lateMonth: number;      // previous month (option 1 — with penalty)
+  lateYear: number;
+  onTimeMonth: number;    // current month (option 2 — on time)
+  onTimeYear: number;
   daysLate: number;
   penalty: number;
 }
@@ -320,10 +320,10 @@ export class WhatsAppService {
           messageId,
           storageKey,
           skipSponsorCheck,
-          currentMonth: billing.month,
-          currentYear: billing.year,
-          nextMonth: billing.nextMonth!,
-          nextYear: billing.nextYear!,
+          lateMonth: billing.lateMonth!,
+          lateYear: billing.lateYear!,
+          onTimeMonth: billing.onTimeMonth!,
+          onTimeYear: billing.onTimeYear!,
           daysLate: billing.daysLate!,
           penalty: billing.penalty!,
         } as PendingMonthChoice, PENDING_SESSION_TTL);
@@ -332,8 +332,8 @@ export class WhatsAppService {
           `📅 *¿Para qué mes quieres registrar este pago?*\n\n` +
           `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
           `👤 Socio: *${partner.nombre}*\n\n` +
-          `1️⃣ *${this.getMonthName(billing.month)} ${billing.year}* — ⚠️ Multa: $${billing.penalty!.toLocaleString('es-CO')} (${billing.daysLate!} día${billing.daysLate! > 1 ? 's' : ''} de retraso)\n` +
-          `2️⃣ *${this.getMonthName(billing.nextMonth!)} ${billing.nextYear!}* — ✅ A tiempo\n\n` +
+          `1️⃣ *${this.getMonthName(billing.lateMonth!)} ${billing.lateYear!}* — ⚠️ Multa: $${billing.penalty!.toLocaleString('es-CO')} (${billing.daysLate!} día${billing.daysLate! > 1 ? 's' : ''} de retraso)\n` +
+          `2️⃣ *${this.getMonthName(billing.onTimeMonth!)} ${billing.onTimeYear!}* — ✅ A tiempo\n\n` +
           `_Responde *1* o *2*. Escribe *CANCELAR* para anular._`,
         );
         return;
@@ -582,9 +582,10 @@ export class WhatsAppService {
 
   /**
    * Determine the billing period for a payment based on the payment date.
-   * - Day 1–5:  billing month = current calendar month (on time)
-   * - Day 6–14: ambiguous — user must choose (late for current month or early for next)
-   * - Day 15–31: billing month = next calendar month (on time, advance payment)
+   * The deadline to pay for month X is the 5th of month X+1.
+   * - Day 1–5 of month X:  billing month = X-1 (previous month, still within deadline)
+   * - Day 6–14 of month X: ambiguous — user must choose (X-1 late with penalty, or X early/on time)
+   * - Day 15–31 of month X: billing month = X (current calendar month)
    */
   private determineBillingPeriod(date: Date): {
     month: number;
@@ -592,35 +593,39 @@ export class WhatsAppService {
     status: 'on_time' | 'ambiguous';
     daysLate?: number;
     penalty?: number;
-    nextMonth?: number;
-    nextYear?: number;
+    lateMonth?: number;
+    lateYear?: number;
+    onTimeMonth?: number;
+    onTimeYear?: number;
   } {
     const day = date.getDate();
     const calendarMonth = date.getMonth() + 1;
     const calendarYear = date.getFullYear();
 
+    // Previous month (for day 1-5 and ambiguous range)
+    const prevMonth = calendarMonth === 1 ? 12 : calendarMonth - 1;
+    const prevYear = calendarMonth === 1 ? calendarYear - 1 : calendarYear;
+
     if (day <= 5) {
-      // Day 1-5: billing month = current calendar month (on time)
-      return { month: calendarMonth, year: calendarYear, status: 'on_time' };
+      // Day 1-5: billing month = previous month (on time, within deadline)
+      return { month: prevMonth, year: prevYear, status: 'on_time' };
     } else if (day >= 15) {
-      // Day 15-31: billing month = next calendar month (on time / advance)
-      const nextMonth = calendarMonth === 12 ? 1 : calendarMonth + 1;
-      const nextYear = calendarMonth === 12 ? calendarYear + 1 : calendarYear;
-      return { month: nextMonth, year: nextYear, status: 'on_time' };
+      // Day 15-31: billing month = current calendar month
+      return { month: calendarMonth, year: calendarYear, status: 'on_time' };
     } else {
-      // Day 6-14: ambiguous
+      // Day 6-14: ambiguous — previous month (late) or current month (on time)
       const daysLate = day - 5;
       const penalty = daysLate * 2000;
-      const nextMonth = calendarMonth === 12 ? 1 : calendarMonth + 1;
-      const nextYear = calendarMonth === 12 ? calendarYear + 1 : calendarYear;
       return {
         month: calendarMonth,
         year: calendarYear,
         status: 'ambiguous',
         daysLate,
         penalty,
-        nextMonth,
-        nextYear,
+        lateMonth: prevMonth,
+        lateYear: prevYear,
+        onTimeMonth: calendarMonth,
+        onTimeYear: calendarYear,
       };
     }
   }
@@ -1530,7 +1535,7 @@ export class WhatsAppService {
     const option = text.trim();
 
     if (option === '1') {
-      // Late payment for current month (with penalty)
+      // Late payment for previous month (with penalty)
       await this.redisService.del(KEY_WA_MONTH_CHOICE + from);
       const partner = await this.partnersService.findById(choice.partnerId);
       if (!partner) {
@@ -1541,10 +1546,10 @@ export class WhatsAppService {
         from, partner, choice.detectedAmount, choice.parsedVoucher,
         choice.imageUrl, choice.imageId, choice.messageId,
         choice.skipSponsorCheck, choice.storageKey,
-        choice.currentMonth, choice.currentYear, choice.penalty,
+        choice.lateMonth, choice.lateYear, choice.penalty,
       );
     } else if (option === '2') {
-      // On-time payment for next month
+      // On-time payment for current month
       await this.redisService.del(KEY_WA_MONTH_CHOICE + from);
       const partner = await this.partnersService.findById(choice.partnerId);
       if (!partner) {
@@ -1555,14 +1560,14 @@ export class WhatsAppService {
         from, partner, choice.detectedAmount, choice.parsedVoucher,
         choice.imageUrl, choice.imageId, choice.messageId,
         choice.skipSponsorCheck, choice.storageKey,
-        choice.nextMonth, choice.nextYear, 0,
+        choice.onTimeMonth, choice.onTimeYear, 0,
       );
     } else {
       // Didn't understand — ask again
       await this.sendMessage(from,
         `⚠️ No entendí tu respuesta.\n\n` +
-        `Responde *1* para *${this.getMonthName(choice.currentMonth)} ${choice.currentYear}* (con multa de $${choice.penalty.toLocaleString('es-CO')})\n` +
-        `o *2* para *${this.getMonthName(choice.nextMonth)} ${choice.nextYear}* (a tiempo).\n\n` +
+        `Responde *1* para *${this.getMonthName(choice.lateMonth)} ${choice.lateYear}* (con multa de $${choice.penalty.toLocaleString('es-CO')})\n` +
+        `o *2* para *${this.getMonthName(choice.onTimeMonth)} ${choice.onTimeYear}* (a tiempo).\n\n` +
         `_Escribe CANCELAR para anular._`,
       );
     }
