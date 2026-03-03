@@ -62,15 +62,14 @@ export class RafflesService {
   }
 
   /**
-   * Calculate total collected for a month from payments
+   * Calculate total collected for a month.
+   * Total = RAFFLE_FEE × number of active partners (regardless of payment status).
    */
   private async calculateTotalCollected(month: number, year: number): Promise<number> {
-    const payments = await this.paymentsService.findByMonthAndYear(month, year);
-    
-    // Count verified payments only
-    const verifiedPayments = payments.filter(p => p.status === 'verified');
-    
-    return verifiedPayments.length * this.RAFFLE_FEE;
+    const partners = await this.partnersService.findAll();
+    const activePartners = partners.filter(p => p.activo);
+
+    return activePartners.length * this.RAFFLE_FEE;
   }
 
   /**
@@ -159,11 +158,14 @@ export class RafflesService {
 
     // Calculate total collected
     const totalCollected = await this.calculateTotalCollected(month, year);
-    const prizeAmount = Math.floor(totalCollected / 2);
-    const remainingAmount = totalCollected - prizeAmount;
 
     // Find winner
     const winner = await this.findWinner(winningDigits, month, year);
+
+    // Prize only applies if there is a winner (50/50 split)
+    // If no winner, everything stays in the natillera
+    const prizeAmount = winner ? Math.floor(totalCollected / 2) : 0;
+    const remainingAmount = totalCollected - prizeAmount;
 
     const raffleData = {
       lotteryNumber,
@@ -266,9 +268,9 @@ export class RafflesService {
             `━━━━━━━━━━━━━━━━━━\n` +
             `🔢 Número Lotería Medellín: *${lotteryNumber}*\n` +
             `🎰 Últimas dos cifras: *${winningDigits}*\n` +
-            `💰 Monto acumulado: *$${remainingAmount.toLocaleString('es-CO')}*\n` +
+            `💰 Monto que queda en la natillera: *$${remainingAmount.toLocaleString('es-CO')}*\n` +
             `━━━━━━━━━━━━━━━━━━\n\n` +
-            `El monto queda acumulado para el próximo mes. 🏦\n\n` +
+            `El 100% del recaudo queda en la natillera. 🏦\n\n` +
             `_— Nacho, asistente de Natillera Chimba Verde 🌿_`,
           );
         }
