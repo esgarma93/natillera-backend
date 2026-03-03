@@ -210,6 +210,8 @@ export class VouchersService {
         parsedVoucher.date,
         validation.issues,
         r2Key, // R2 storage key
+        undefined, // no whatsappFrom
+        month, // override month from frontend selection
       );
 
       this.logger.log(`Payment created for partner: ${partner.nombre}, amount: ${partner.montoCuota}, status: ${payment.status}`);
@@ -266,6 +268,8 @@ export class VouchersService {
               parsedVoucher.date,
               [`Pago aplicado del excedente del socio ${partner.nombre}`],
               r2Key,
+              undefined, // no whatsappFrom
+              month, // override month from frontend selection
             );
 
             additionalPayments.push({
