@@ -1287,26 +1287,88 @@ export class WhatsAppService {
       const payments = await this.paymentsService.findByMonthAndYear(month, year);
       const withVoucher = payments.filter(p => p.voucherImageUrl || p.voucherStorageKey);
 
-      if (withVoucher.length === 0) {
+      // ── Build payment summary ──
+      const allPartners = await this.partnersService.findAll();
+      const activePartners = allPartners.filter(p => p.activo);
+      const monthName = this.getMonthName(month);
+
+      // Determine which active partners have paid (any status except rejected)
+      const paidPartnerIds = new Set(
+        payments
+          .filter(p => p.status === 'verified' || p.status === 'pending')
+          .map(p => p.partnerId),
+      );
+      const unpaidPartners = activePartners.filter(p => !paidPartnerIds.has(p.id));
+
+      // Financial totals
+      const totalExpected = activePartners.reduce((sum, p) => sum + (p.montoCuota || 0), 0);
+      const totalReceived = payments
+        .filter(p => p.status === 'verified' || p.status === 'pending')
+        .reduce((sum, p) => sum + p.amount, 0);
+      const difference = totalReceived - totalExpected;
+
+      // Verified vs pending counts
+      const verifiedCount = payments.filter(p => p.status === 'verified').length;
+      const pendingCount = payments.filter(p => p.status === 'pending').length;
+
+      if (withVoucher.length === 0 && payments.length === 0) {
         await this.sendMessage(
           from,
-          `📋 No se encontraron comprobantes para *${this.getMonthName(month)} ${year}*.\n\n` +
+          `📋 No se encontraron comprobantes para *${monthName} ${year}*.\n\n` +
+          `👥 Socios activos: *${activePartners.length}* — Ninguno ha pagado aún.\n` +
+          `💰 Esperado: *$${totalExpected.toLocaleString('es-CO')}*\n\n` +
           `_Usa *COMPROBANTES <mes>* (ej: COMPROBANTES 6) para consultar otro mes._`,
         );
         return;
       }
 
-      // Build a single text message with all vouchers and their presigned URLs
+      // ── Summary header ──
+      let summaryEmoji: string;
+      let summaryText: string;
+      if (unpaidPartners.length === 0 && difference === 0) {
+        summaryEmoji = '✅';
+        summaryText = '¡Todo cuadra! Todos los socios pagaron y los montos coinciden.';
+      } else if (unpaidPartners.length === 0 && difference > 0) {
+        summaryEmoji = '📈';
+        summaryText = `Todos pagaron. Hay un *sobrante* de *$${difference.toLocaleString('es-CO')}*.`;
+      } else if (unpaidPartners.length === 0 && difference < 0) {
+        summaryEmoji = '⚠️';
+        summaryText = `Todos pagaron pero hay un *faltante* de *$${Math.abs(difference).toLocaleString('es-CO')}*.`;
+      } else if (difference >= 0) {
+        summaryEmoji = '⏳';
+        summaryText = `Faltan *${unpaidPartners.length}* socio${unpaidPartners.length !== 1 ? 's' : ''} por pagar.`;
+      } else {
+        summaryEmoji = '⚠️';
+        summaryText = `Faltan *${unpaidPartners.length}* socio${unpaidPartners.length !== 1 ? 's' : ''} por pagar y hay un *faltante* de *$${Math.abs(difference).toLocaleString('es-CO')}*.`;
+      }
+
       let msg =
-        `📋 *Comprobantes de ${this.getMonthName(month)} ${year}*\n` +
-        `Total: *${withVoucher.length}* comprobante${withVoucher.length === 1 ? '' : 's'}\n\n`;
+        `📋 *Comprobantes de ${monthName} ${year}*\n\n` +
+        `${summaryEmoji} ${summaryText}\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `👥 Socios activos: *${activePartners.length}*\n` +
+        `💵 Pagaron: *${paidPartnerIds.size}* (✅ ${verifiedCount} verificado${verifiedCount !== 1 ? 's' : ''} · ⏳ ${pendingCount} pendiente${pendingCount !== 1 ? 's' : ''})\n` +
+        `💰 Esperado: *$${totalExpected.toLocaleString('es-CO')}*\n` +
+        `💰 Recibido: *$${totalReceived.toLocaleString('es-CO')}*\n` +
+        (difference !== 0
+          ? `${difference > 0 ? '📈' : '📉'} Diferencia: *${difference > 0 ? '+' : '-'}$${Math.abs(difference).toLocaleString('es-CO')}*\n`
+          : '') +
+        (unpaidPartners.length > 0
+          ? `❌ Sin pagar: ${unpaidPartners.map(p => p.nombre).join(', ')}\n`
+          : '') +
+        `━━━━━━━━━━━━━━━━━━\n\n`;
 
-      for (const payment of withVoucher) {
-        const statusEmoji = payment.status === 'verified' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
-        const voucherUrl = this.buildVoucherRedirectUrl(payment.id);
+      // ── Individual vouchers ──
+      if (withVoucher.length > 0) {
+        msg += `📎 *${withVoucher.length}* comprobante${withVoucher.length === 1 ? '' : 's'}:\n\n`;
 
-        msg += `${statusEmoji} *${payment.partnerName || 'Socio'}* — $${payment.amount.toLocaleString('es-CO')}\n`;
-        msg += `🔗 ${voucherUrl}\n\n`;
+        for (const payment of withVoucher) {
+          const statusEmoji = payment.status === 'verified' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
+          const voucherUrl = this.buildVoucherRedirectUrl(payment.id);
+
+          msg += `${statusEmoji} *${payment.partnerName || 'Socio'}* — $${payment.amount.toLocaleString('es-CO')}\n`;
+          msg += `🔗 ${voucherUrl}\n\n`;
+        }
       }
 
       msg += `━━━━━━━━━━━━━━━━━━`;
