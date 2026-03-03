@@ -15,6 +15,8 @@ import axios from 'axios';
 const KEY_WA_AUTH = 'wa:auth:';
 const KEY_WA_PENDING = 'wa:pending:';
 const KEY_WA_SPONSOR = 'wa:sponsor:';
+const KEY_WA_MONTH_CHOICE = 'wa:month_choice:';
+const KEY_WA_VOUCHER_MONTH = 'wa:voucher_month:';
 
 // TTLs in seconds
 const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
@@ -51,6 +53,24 @@ interface PendingSponsorChoice {
     numeroRifa: number;
     montoCuota: number;
   }>;
+}
+
+// Pending month choice: stored when payment date falls on day 6-14 (ambiguous billing period)
+interface PendingMonthChoice {
+  partnerId: string;
+  detectedAmount: number;
+  parsedVoucher: any;
+  imageUrl: string;
+  imageId: string;
+  messageId: string;
+  storageKey?: string;
+  skipSponsorCheck: boolean;
+  currentMonth: number;
+  currentYear: number;
+  nextMonth: number;
+  nextYear: number;
+  daysLate: number;
+  penalty: number;
 }
 
 // Authentication session per phone number
@@ -271,12 +291,57 @@ export class WhatsAppService {
     messageId: string,
     skipSponsorCheck: boolean = false,
     storageKey?: string,
+    overrideBillingMonth?: number,
+    overrideBillingYear?: number,
+    latePenalty?: number,
   ): Promise<void> {
-    // Use voucher date to determine payment month (same logic as createFromWhatsAppWithValidation)
+    // Use voucher date to determine payment month via billing period logic
     const voucherDate = parsedVoucher?.date || null;
     const paymentDate = voucherDate ? new Date(voucherDate) : new Date();
-    const paymentMonth = paymentDate.getMonth() + 1;
-    const paymentYear = paymentDate.getFullYear();
+
+    let paymentMonth: number;
+    let paymentYear: number;
+
+    if (overrideBillingMonth !== undefined && overrideBillingYear !== undefined) {
+      // Overridden by month choice handler (user already picked)
+      paymentMonth = overrideBillingMonth;
+      paymentYear = overrideBillingYear;
+    } else {
+      const billing = this.determineBillingPeriod(paymentDate);
+
+      if (billing.status === 'ambiguous' && detectedAmount !== null) {
+        // Day 6-14: ask user which month to assign the payment to
+        await this.redisService.set(KEY_WA_MONTH_CHOICE + from, {
+          partnerId: partner.id,
+          detectedAmount,
+          parsedVoucher,
+          imageUrl,
+          imageId,
+          messageId,
+          storageKey,
+          skipSponsorCheck,
+          currentMonth: billing.month,
+          currentYear: billing.year,
+          nextMonth: billing.nextMonth!,
+          nextYear: billing.nextYear!,
+          daysLate: billing.daysLate!,
+          penalty: billing.penalty!,
+        } as PendingMonthChoice, PENDING_SESSION_TTL);
+
+        await this.sendMessage(from,
+          `📅 *¿Para qué mes quieres registrar este pago?*\n\n` +
+          `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
+          `👤 Socio: *${partner.nombre}*\n\n` +
+          `1️⃣ *${this.getMonthName(billing.month)} ${billing.year}* — ⚠️ Multa: $${billing.penalty!.toLocaleString('es-CO')} (${billing.daysLate!} día${billing.daysLate! > 1 ? 's' : ''} de retraso)\n` +
+          `2️⃣ *${this.getMonthName(billing.nextMonth!)} ${billing.nextYear!}* — ✅ A tiempo\n\n` +
+          `_Responde *1* o *2*. Escribe *CANCELAR* para anular._`,
+        );
+        return;
+      }
+
+      paymentMonth = billing.month;
+      paymentYear = billing.year;
+    }
 
     // Fetch sponsor info if partner has one
     let sponsorLine = '';
@@ -402,6 +467,14 @@ export class WhatsAppService {
           paymentYear,
         );
 
+        // Add late penalty to validation issues if applicable
+        if (latePenalty && latePenalty > 0) {
+          const daysLate = Math.round(latePenalty / 2000);
+          validation.issues.push(
+            `Multa por pago tardío: $${latePenalty.toLocaleString('es-CO')} (${daysLate} día${daysLate > 1 ? 's' : ''} de retraso después del 5)`,
+          );
+        }
+
         const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
           partner.id,
           detectedAmount,
@@ -412,6 +485,7 @@ export class WhatsAppService {
           validation.issues,
           storageKey,
           from,
+          paymentMonth,
         );
 
         this.logger.log(`Payment created for ${partner.nombre}, status: ${paymentResult.status}`);
@@ -425,6 +499,9 @@ export class WhatsAppService {
           `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
           `💵 Cuota esperada: *$${partner.montoCuota.toLocaleString('es-CO')}*\n` +
           `📅 Mes: *${this.getMonthName(paymentMonth)} ${paymentYear}*\n` +
+          (latePenalty && latePenalty > 0
+            ? `⚠️ Multa por retraso: *$${latePenalty.toLocaleString('es-CO')}*\n`
+            : '') +
           `🏦 Tipo: *${parsedVoucher.type.toUpperCase()}*\n` +
           `━━━━━━━━━━━━━━━━━━\n\n`;
 
@@ -504,6 +581,51 @@ export class WhatsAppService {
   }
 
   /**
+   * Determine the billing period for a payment based on the payment date.
+   * - Day 1–5:  billing month = current calendar month (on time)
+   * - Day 6–14: ambiguous — user must choose (late for current month or early for next)
+   * - Day 15–31: billing month = next calendar month (on time, advance payment)
+   */
+  private determineBillingPeriod(date: Date): {
+    month: number;
+    year: number;
+    status: 'on_time' | 'ambiguous';
+    daysLate?: number;
+    penalty?: number;
+    nextMonth?: number;
+    nextYear?: number;
+  } {
+    const day = date.getDate();
+    const calendarMonth = date.getMonth() + 1;
+    const calendarYear = date.getFullYear();
+
+    if (day <= 5) {
+      // Day 1-5: billing month = current calendar month (on time)
+      return { month: calendarMonth, year: calendarYear, status: 'on_time' };
+    } else if (day >= 15) {
+      // Day 15-31: billing month = next calendar month (on time / advance)
+      const nextMonth = calendarMonth === 12 ? 1 : calendarMonth + 1;
+      const nextYear = calendarMonth === 12 ? calendarYear + 1 : calendarYear;
+      return { month: nextMonth, year: nextYear, status: 'on_time' };
+    } else {
+      // Day 6-14: ambiguous
+      const daysLate = day - 5;
+      const penalty = daysLate * 2000;
+      const nextMonth = calendarMonth === 12 ? 1 : calendarMonth + 1;
+      const nextYear = calendarMonth === 12 ? calendarYear + 1 : calendarYear;
+      return {
+        month: calendarMonth,
+        year: calendarYear,
+        status: 'ambiguous',
+        daysLate,
+        penalty,
+        nextMonth,
+        nextYear,
+      };
+    }
+  }
+
+  /**
    * Handle text message
    */
   private async handleTextMessage(message: any, from: string): Promise<void> {
@@ -528,6 +650,36 @@ export class WhatsAppService {
         return;
       }
       await this.handleSponsorChoice(from, text, sponsorChoice);
+      return;
+    }
+
+    // ── Pending month choice (day 6-14 ambiguous billing period) ──
+    const monthChoice = await this.redisService.get<PendingMonthChoice>(KEY_WA_MONTH_CHOICE + from);
+    if (monthChoice) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_MONTH_CHOICE + from);
+        await this.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
+        return;
+      }
+      await this.handleMonthChoice(from, text, monthChoice);
+      return;
+    }
+
+    // ── Pending voucher month query (admin waiting for month number for COMPROBANTES) ──
+    const voucherMonthQuery = await this.redisService.get<{ active: boolean }>(KEY_WA_VOUCHER_MONTH + from);
+    if (voucherMonthQuery) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_VOUCHER_MONTH + from);
+        await this.sendMessage(from, '✅ Consulta cancelada.');
+        return;
+      }
+      const monthNum = parseInt(text.trim(), 10);
+      if (monthNum >= 1 && monthNum <= 12) {
+        await this.redisService.del(KEY_WA_VOUCHER_MONTH + from);
+        await this.sendMonthlyVouchers(from, `COMPROBANTES ${monthNum}`);
+        return;
+      }
+      await this.sendMessage(from, '⚠️ Por favor ingresa un número de mes válido (1-12).\n\n_Escribe CANCELAR para anular._');
       return;
     }
 
@@ -1112,6 +1264,19 @@ export class WhatsAppService {
             year = now.getFullYear() - 1;
           }
         }
+      } else {
+        // No month specified → ask which month to query
+        await this.redisService.set(KEY_WA_VOUCHER_MONTH + from, { active: true }, PENDING_SESSION_TTL);
+        await this.sendMessage(from,
+          `📋 *¿De qué mes quieres ver los comprobantes?*\n\n` +
+          `Ingresa el número del mes (1-12):\n` +
+          `1 = Enero, 2 = Febrero, 3 = Marzo,\n` +
+          `4 = Abril, 5 = Mayo, 6 = Junio,\n` +
+          `7 = Julio, 8 = Agosto, 9 = Septiembre,\n` +
+          `10 = Octubre, 11 = Noviembre, 12 = Diciembre\n\n` +
+          `_Escribe CANCELAR para anular._`,
+        );
+        return;
       }
 
       const payments = await this.paymentsService.findByMonthAndYear(month, year);
@@ -1354,6 +1519,52 @@ export class WhatsAppService {
           );
         }
       }
+    }
+  }
+
+  /**
+   * Handle the user's response when asked which month to assign a payment to (day 6-14 ambiguous period).
+   * Option 1 = current month (late, with penalty), Option 2 = next month (on time).
+   */
+  private async handleMonthChoice(from: string, text: string, choice: PendingMonthChoice): Promise<void> {
+    const option = text.trim();
+
+    if (option === '1') {
+      // Late payment for current month (with penalty)
+      await this.redisService.del(KEY_WA_MONTH_CHOICE + from);
+      const partner = await this.partnersService.findById(choice.partnerId);
+      if (!partner) {
+        await this.sendMessage(from, '❌ No se encontró el socio. Intenta enviar el comprobante de nuevo.');
+        return;
+      }
+      await this.registerPaymentForPartner(
+        from, partner, choice.detectedAmount, choice.parsedVoucher,
+        choice.imageUrl, choice.imageId, choice.messageId,
+        choice.skipSponsorCheck, choice.storageKey,
+        choice.currentMonth, choice.currentYear, choice.penalty,
+      );
+    } else if (option === '2') {
+      // On-time payment for next month
+      await this.redisService.del(KEY_WA_MONTH_CHOICE + from);
+      const partner = await this.partnersService.findById(choice.partnerId);
+      if (!partner) {
+        await this.sendMessage(from, '❌ No se encontró el socio. Intenta enviar el comprobante de nuevo.');
+        return;
+      }
+      await this.registerPaymentForPartner(
+        from, partner, choice.detectedAmount, choice.parsedVoucher,
+        choice.imageUrl, choice.imageId, choice.messageId,
+        choice.skipSponsorCheck, choice.storageKey,
+        choice.nextMonth, choice.nextYear, 0,
+      );
+    } else {
+      // Didn't understand — ask again
+      await this.sendMessage(from,
+        `⚠️ No entendí tu respuesta.\n\n` +
+        `Responde *1* para *${this.getMonthName(choice.currentMonth)} ${choice.currentYear}* (con multa de $${choice.penalty.toLocaleString('es-CO')})\n` +
+        `o *2* para *${this.getMonthName(choice.nextMonth)} ${choice.nextYear}* (a tiempo).\n\n` +
+        `_Escribe CANCELAR para anular._`,
+      );
     }
   }
 

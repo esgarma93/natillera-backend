@@ -182,6 +182,7 @@ export class PaymentsService {
     validationIssues: string[],
     voucherStorageKey?: string,
     whatsappFrom?: string,
+    overrideMonth?: number,
   ): Promise<PaymentResponseDto> {
     // Get active period
     const activePeriod = await this.periodsService.getActivePeriod();
@@ -194,9 +195,9 @@ export class PaymentsService {
     const expectedAmount = partner.montoCuota || activePeriod.monthlyFee;
     const difference = amount - expectedAmount;
     
-    // Determine month from voucher date or current date
+    // Determine month: use override (billing period logic) or fallback to voucher/current date
     const paymentDate = voucherDate || new Date();
-    const month = paymentDate.getMonth() + 1;
+    const month = overrideMonth ?? (paymentDate.getMonth() + 1);
 
     // Check if payment already exists for this partner/period/month
     const existingPayment = await this.paymentRepository.findByPartnerPeriodAndMonth(
