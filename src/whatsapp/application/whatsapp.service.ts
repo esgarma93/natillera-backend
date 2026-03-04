@@ -17,6 +17,7 @@ const KEY_WA_PENDING = 'wa:pending:';
 const KEY_WA_SPONSOR = 'wa:sponsor:';
 const KEY_WA_MONTH_CHOICE = 'wa:month_choice:';
 const KEY_WA_VOUCHER_MONTH = 'wa:voucher_month:';
+const KEY_WA_ADMIN_PAY = 'wa:admin_pay:';        // admin registering payment for another partner
 
 // TTLs in seconds
 const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
@@ -80,6 +81,18 @@ interface AuthSession {
   waitingForPin: boolean; // true = bot asked for PIN, waiting response
   pendingCommand?: string; // command that triggered the PIN flow (e.g. 'menu')
   menuActive?: boolean;    // true = numbered menu was shown, waiting for 1/2/3
+}
+
+// Admin pay-for-others session: stored while waiting for partner selection or voucher image
+interface AdminPaySession {
+  step: 'select_partner' | 'awaiting_image';
+  month: number;
+  year: number;
+  unpaidPartners: Array<{ id: string; nombre: string; numeroRifa: number; montoCuota: number }>;
+  selectedPartnerId?: string;
+  selectedPartnerName?: string;
+  selectedPartnerNumeroRifa?: number;
+  selectedPartnerMontoCuota?: number;
 }
 
 const MAX_PIN_ATTEMPTS = 3;
@@ -202,6 +215,41 @@ export class WhatsAppService {
         return;
       }
 
+      const detectedAmount = parsedVoucher.amount || ocrResult.amount;
+
+      // ── Admin pay-for-others: intercept image when admin is in 'awaiting_image' step ──
+      const adminPaySession = await this.redisService.get<AdminPaySession>(KEY_WA_ADMIN_PAY + from);
+      if (adminPaySession && adminPaySession.step === 'awaiting_image') {
+        // Upload image to R2 first
+        let persistentImageUrl = imageUrl;
+        let persistentStorageKey: string | undefined;
+        if (this.storageService.isEnabled() && imageBuffer) {
+          const storageKey = this.storageService.buildVoucherKey(
+            adminPaySession.selectedPartnerId || 'unknown',
+            parsedVoucher.type || 'voucher',
+            imageMimeType,
+          );
+          const r2Url = await this.storageService.uploadVoucher(imageBuffer, storageKey, imageMimeType);
+          if (r2Url) {
+            persistentImageUrl = r2Url;
+            persistentStorageKey = storageKey;
+            this.logger.log(`Voucher stored in R2 (admin pay): ${storageKey}`);
+          }
+        }
+
+        await this.redisService.del(KEY_WA_ADMIN_PAY + from);
+        const partner = await this.partnersService.findById(adminPaySession.selectedPartnerId!);
+        if (!partner) {
+          await this.sendMessage(from, '❌ No se encontró el socio seleccionado. Intenta de nuevo desde el menú.');
+          return;
+        }
+        await this.registerPaymentForPartner(
+          from, partner, detectedAmount, parsedVoucher,
+          persistentImageUrl, imageId, messageId, false, persistentStorageKey,
+        );
+        return;
+      }
+
       // Try to extract partner info from caption
       const raffleNumber = this.extractRaffleNumber(caption);
 
@@ -217,7 +265,6 @@ export class WhatsAppService {
 
       const currentMonth = new Date().getMonth() + 1;
       const currentYear = new Date().getFullYear();
-      const detectedAmount = parsedVoucher.amount || ocrResult.amount;
 
       // Upload voucher image to R2 cloud storage for persistence
       let persistentImageUrl = imageUrl;
@@ -688,6 +735,27 @@ export class WhatsAppService {
       return;
     }
 
+    // ── Admin pay-for-others: partner selection step or awaiting image ──
+    const adminPaySession = await this.redisService.get<AdminPaySession>(KEY_WA_ADMIN_PAY + from);
+    if (adminPaySession) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_ADMIN_PAY + from);
+        await this.sendMessage(from, '✅ Registro cancelado.');
+        return;
+      }
+      if (adminPaySession.step === 'select_partner') {
+        await this.handleAdminPartnerSelection(from, text, adminPaySession);
+        return;
+      }
+      if (adminPaySession.step === 'awaiting_image') {
+        await this.sendMessage(from,
+          `📸 Estoy esperando la *foto del comprobante* para *${adminPaySession.selectedPartnerName}*.\n\n` +
+          `Envía la imagen o escribe *CANCELAR* para anular.`,
+        );
+        return;
+      }
+    }
+
     // ── Pending voucher session (partner not found, waiting for raffle number) ──
     const pendingSession = await this.redisService.get<PendingSession>(KEY_WA_PENDING + from);
     if (pendingSession) {
@@ -747,8 +815,8 @@ export class WhatsAppService {
       return;
     }
 
-    // ── Numbered menu selection (1, 2, 3) when menu is active ──
-    if (authSession?.authenticated && authSession?.menuActive && /^[1-3]$/.test(text.trim())) {
+    // ── Numbered menu selection (1, 2, 3, 4) when menu is active ──
+    if (authSession?.authenticated && authSession?.menuActive && /^[1-4]$/.test(text.trim())) {
       await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
       // Clear menuActive flag
       await this.redisService.set(KEY_WA_AUTH + from, {
@@ -764,6 +832,12 @@ export class WhatsAppService {
       } else if (option === 3) {
         if (await this.isAdmin(from)) {
           await this.sendMonthlyVouchers(from, 'COMPROBANTES');
+        } else {
+          await this.sendMessage(from, `⚠️ Esta opción está disponible solo para administradores.`);
+        }
+      } else if (option === 4) {
+        if (await this.isAdmin(from)) {
+          await this.startAdminPayForPartner(from);
         } else {
           await this.sendMessage(from, `⚠️ Esta opción está disponible solo para administradores.`);
         }
@@ -959,6 +1033,7 @@ export class WhatsAppService {
 
     if (isAdmin) {
       menuMsg += `3️⃣ Ver todos los comprobantes del mes\n`;
+      menuMsg += `4️⃣ Registrar pago de un socio\n`;
     }
 
     menuMsg += `\n_Responde con el *número* de la opción._`;
@@ -1633,6 +1708,119 @@ export class WhatsAppService {
         `_Escribe CANCELAR para anular._`,
       );
     }
+  }
+
+  // ─────────────────── ADMIN PAY FOR OTHERS ───────────────────
+
+  /**
+   * Start the "register payment for another partner" flow.
+   * Shows a numbered list of active partners who have NOT paid for the current month.
+   */
+  private async startAdminPayForPartner(from: string): Promise<void> {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const year = now.getFullYear();
+    const monthName = this.getMonthName(month);
+
+    const allPartners = await this.partnersService.findAll();
+    const activePartners = allPartners.filter(p => p.activo);
+
+    const payments = await this.paymentsService.findByMonthAndYear(month, year);
+    const paidPartnerIds = new Set(
+      payments
+        .filter(p => p.status === 'verified' || p.status === 'pending')
+        .map(p => p.partnerId),
+    );
+
+    const unpaidPartners = activePartners
+      .filter(p => !paidPartnerIds.has(p.id))
+      .sort((a, b) => a.numeroRifa - b.numeroRifa);
+
+    if (unpaidPartners.length === 0) {
+      await this.sendMessage(from,
+        `✅ *¡Todos los socios activos ya pagaron ${monthName} ${year}!*\n\n` +
+        `No hay pagos pendientes para registrar.`,
+      );
+      return;
+    }
+
+    // Save session in Redis
+    await this.redisService.set(KEY_WA_ADMIN_PAY + from, {
+      step: 'select_partner',
+      month,
+      year,
+      unpaidPartners: unpaidPartners.map(p => ({
+        id: p.id,
+        nombre: p.nombre,
+        numeroRifa: p.numeroRifa,
+        montoCuota: p.montoCuota,
+      })),
+    } as AdminPaySession, PENDING_SESSION_TTL);
+
+    // Build numbered list message
+    let msg =
+      `📋 *Socios con pago pendiente — ${monthName} ${year}*\n` +
+      `Total: *${unpaidPartners.length}* socio${unpaidPartners.length !== 1 ? 's' : ''}\n\n`;
+
+    unpaidPartners.forEach((p, i) => {
+      msg += `${i + 1}. *${p.nombre}* (Rifa #${p.numeroRifa}) — $${p.montoCuota.toLocaleString('es-CO')}\n`;
+    });
+
+    msg += `\n_Responde con el *número* del socio para registrar su pago._\n`;
+    msg += `_Escribe *CANCELAR* para anular._`;
+
+    // Split if very long
+    if (msg.length > 4096) {
+      const lines = msg.split('\n');
+      let chunk = '';
+      for (const line of lines) {
+        if ((chunk + '\n' + line).length > 4000 && chunk.length > 0) {
+          await this.sendMessage(from, chunk);
+          chunk = line;
+        } else {
+          chunk = chunk ? chunk + '\n' + line : line;
+        }
+      }
+      if (chunk) await this.sendMessage(from, chunk);
+    } else {
+      await this.sendMessage(from, msg);
+    }
+  }
+
+  /**
+   * Handle admin's partner selection for the pay-for-others flow.
+   */
+  private async handleAdminPartnerSelection(from: string, text: string, session: AdminPaySession): Promise<void> {
+    const num = parseInt(text.replace(/\D/g, ''), 10);
+
+    if (isNaN(num) || num < 1 || num > session.unpaidPartners.length) {
+      await this.sendMessage(from,
+        `⚠️ Número inválido.\n\n` +
+        `Responde con un número del *1* al *${session.unpaidPartners.length}*.\n\n` +
+        `_Escribe *CANCELAR* para anular._`,
+      );
+      return;
+    }
+
+    const selected = session.unpaidPartners[num - 1];
+
+    // Update session: advance to awaiting_image
+    await this.redisService.set(KEY_WA_ADMIN_PAY + from, {
+      ...session,
+      step: 'awaiting_image',
+      selectedPartnerId: selected.id,
+      selectedPartnerName: selected.nombre,
+      selectedPartnerNumeroRifa: selected.numeroRifa,
+      selectedPartnerMontoCuota: selected.montoCuota,
+    } as AdminPaySession, PENDING_SESSION_TTL);
+
+    await this.sendMessage(from,
+      `👤 Socio seleccionado: *${selected.nombre}* (Rifa #${selected.numeroRifa})\n` +
+      `💵 Cuota esperada: *$${selected.montoCuota.toLocaleString('es-CO')}*\n` +
+      `📅 Mes: *${this.getMonthName(session.month)} ${session.year}*\n\n` +
+      `📸 *Envía la foto del comprobante* (Nequi o Bancolombia) para registrar el pago.\n\n` +
+      `_Escribe *CANCELAR* para anular._`,
+    );
   }
 
   /**
