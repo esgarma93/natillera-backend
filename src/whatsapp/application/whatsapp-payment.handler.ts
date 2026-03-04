@@ -114,6 +114,7 @@ export class WhatsAppPaymentHandler {
         await this.registerPaymentForPartner(
           from, partner, detectedAmount, parsedVoucher,
           persistentImageUrl, imageId, messageId, false, persistentStorageKey,
+          adminPaySession.month, adminPaySession.year,
         );
         return;
       }
