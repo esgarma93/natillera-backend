@@ -276,6 +276,8 @@ export class WhatsAppPaymentHandler {
         const sponsoredPartners = allPartners.filter(
           p => p.idPartnerPatrocinador === partner.id && p.activo,
         );
+
+        // Case A: amount exactly matches a sponsored partner's quota → redirect entire payment
         const matchingSponsored = sponsoredPartners.filter(
           p => p.montoCuota === detectedAmount,
         );
@@ -287,6 +289,8 @@ export class WhatsAppPaymentHandler {
             originalPartnerName: partner.nombre,
             originalPartnerMontoCuota: partner.montoCuota,
             storageKey,
+            overrideBillingMonth: paymentMonth,
+            overrideBillingYear: paymentYear,
             sponsoredOptions: matchingSponsored.map(p => ({
               id: p.id, nombre: p.nombre, numeroRifa: p.numeroRifa, montoCuota: p.montoCuota,
             })),
@@ -315,6 +319,58 @@ export class WhatsAppPaymentHandler {
             });
             msg += `\n¿Para quién es este pago?\n` +
               `Responde con el *número* (1, 2...) o *NO* si es para ti.\n\n` +
+              `_Escribe CANCELAR para anular._`;
+            await this.messagingService.sendMessage(from, msg);
+          }
+          return;
+        }
+
+        // Case B: amount > partner's quota and there are sponsored partners → offer split
+        if (detectedAmount > partner.montoCuota && sponsoredPartners.length > 0) {
+          const excessAmount = detectedAmount - partner.montoCuota;
+
+          await this.redisService.set(KEY_WA_SPONSOR + from, {
+            imageId, imageUrl, messageId, detectedAmount, parsedVoucher, from,
+            originalPartnerId: partner.id,
+            originalPartnerName: partner.nombre,
+            originalPartnerMontoCuota: partner.montoCuota,
+            storageKey,
+            isSplitPayment: true,
+            excessAmount,
+            overrideBillingMonth: paymentMonth,
+            overrideBillingYear: paymentYear,
+            sponsoredOptions: sponsoredPartners.map(p => ({
+              id: p.id, nombre: p.nombre, numeroRifa: p.numeroRifa, montoCuota: p.montoCuota,
+            })),
+          } as PendingSponsorChoice, PENDING_SESSION_TTL);
+
+          if (sponsoredPartners.length === 1) {
+            const sp = sponsoredPartners[0];
+            const amountForSponsored = Math.min(excessAmount, sp.montoCuota);
+            await this.messagingService.sendMessage(from,
+              `💰 *El monto excede la cuota del socio*\n\n` +
+              `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
+              `💵 Cuota de *${partner.nombre}*: *$${partner.montoCuota.toLocaleString('es-CO')}*\n` +
+              `📊 Excedente: *$${excessAmount.toLocaleString('es-CO')}*\n\n` +
+              `El excedente se puede aplicar al patrocinado:\n` +
+              `👤 *${sp.nombre}* (Rifa #${sp.numeroRifa}) — Cuota: $${sp.montoCuota.toLocaleString('es-CO')}\n\n` +
+              `¿Registrar *$${partner.montoCuota.toLocaleString('es-CO')}* para *${partner.nombre}* y *$${amountForSponsored.toLocaleString('es-CO')}* para *${sp.nombre}*?\n` +
+              `Responde *SÍ* o *NO*\n\n` +
+              `_Escribe CANCELAR para anular._`,
+            );
+          } else {
+            let msg =
+              `💰 *El monto excede la cuota del socio*\n\n` +
+              `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
+              `💵 Cuota de *${partner.nombre}*: *$${partner.montoCuota.toLocaleString('es-CO')}*\n` +
+              `📊 Excedente: *$${excessAmount.toLocaleString('es-CO')}*\n\n` +
+              `Patrocinados disponibles para aplicar el excedente:\n\n`;
+            sponsoredPartners.forEach((sp, i) => {
+              const amountForSp = Math.min(excessAmount, sp.montoCuota);
+              msg += `${i + 1}️⃣ *${sp.nombre}* (Rifa #${sp.numeroRifa}) — Cuota: $${sp.montoCuota.toLocaleString('es-CO')} (se aplicarían $${amountForSp.toLocaleString('es-CO')})\n`;
+            });
+            msg += `\n¿A quién aplicar el excedente?\n` +
+              `Responde con el *número* (1, 2...) o *NO* para registrar todo a *${partner.nombre}*.\n\n` +
               `_Escribe CANCELAR para anular._`;
             await this.messagingService.sendMessage(from, msg);
           }
@@ -472,10 +528,20 @@ export class WhatsAppPaymentHandler {
 
   /**
    * Handle the user's response when asked whether a payment is for a sponsored partner.
+   * Supports two modes:
+   * - Case A (redirect): the full amount matches a sponsored partner's quota
+   * - Case B (split/isSplitPayment): amount > main partner quota, excess goes to sponsored
    */
   async handleSponsorChoice(from: string, text: string, choice: PendingSponsorChoice): Promise<void> {
     const textLower = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
+    // ── Case B: Split payment (main + sponsored) ──
+    if (choice.isSplitPayment) {
+      await this.handleSplitSponsorChoice(from, textLower, text, choice);
+      return;
+    }
+
+    // ── Case A: Redirect entire payment to a sponsored partner ──
     if (choice.sponsoredOptions.length === 1) {
       // Single sponsored option → SÍ / NO
       if (textLower === 'si' || textLower === 'sí' || textLower === 'yes' || textLower === '1') {
@@ -486,6 +552,7 @@ export class WhatsAppPaymentHandler {
           await this.registerPaymentForPartner(
             from, partner, choice.detectedAmount, choice.parsedVoucher,
             choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+            choice.overrideBillingMonth, choice.overrideBillingYear,
           );
         }
       } else if (textLower === 'no' || textLower === '2') {
@@ -495,10 +562,10 @@ export class WhatsAppPaymentHandler {
           await this.registerPaymentForPartner(
             from, partner, choice.detectedAmount, choice.parsedVoucher,
             choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+            choice.overrideBillingMonth, choice.overrideBillingYear,
           );
         }
       } else {
-        // Didn't understand — ask again (keep session alive)
         await this.messagingService.sendMessage(from,
           `⚠️ No entendí tu respuesta.\n\n` +
           `Responde *SÍ* para registrar el pago a nombre de *${choice.sponsoredOptions[0].nombre}*,\n` +
@@ -515,6 +582,7 @@ export class WhatsAppPaymentHandler {
           await this.registerPaymentForPartner(
             from, partner, choice.detectedAmount, choice.parsedVoucher,
             choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+            choice.overrideBillingMonth, choice.overrideBillingYear,
           );
         }
       } else {
@@ -527,14 +595,124 @@ export class WhatsAppPaymentHandler {
             await this.registerPaymentForPartner(
               from, partner, choice.detectedAmount, choice.parsedVoucher,
               choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+              choice.overrideBillingMonth, choice.overrideBillingYear,
             );
           }
         } else {
-          // Didn't understand
           await this.messagingService.sendMessage(from,
             `⚠️ No entendí tu respuesta.\n\n` +
             `Responde con el *número* del patrocinado (1-${choice.sponsoredOptions.length}),\n` +
             `o *NO* para registrar el pago a tu nombre (*${choice.originalPartnerName}*).\n\n` +
+            `_Escribe CANCELAR para anular._`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Handle split payment confirmation: create payment for main partner at their quota,
+   * then apply the excess to the selected sponsored partner(s).
+   * Mirrors the frontend behavior in vouchers.service.ts.
+   */
+  private async handleSplitSponsorChoice(
+    from: string, textLower: string, rawText: string, choice: PendingSponsorChoice,
+  ): Promise<void> {
+    const excessAmount = choice.excessAmount!;
+    const paymentMonth = choice.overrideBillingMonth;
+    const paymentYear = choice.overrideBillingYear;
+
+    if (choice.sponsoredOptions.length === 1) {
+      // Single sponsored → SÍ/NO
+      if (textLower === 'si' || textLower === 'sí' || textLower === 'yes' || textLower === '1') {
+        await this.redisService.del(KEY_WA_SPONSOR + from);
+        const sponsored = choice.sponsoredOptions[0];
+
+        // 1) Main partner payment at their quota
+        const mainPartner = await this.partnersService.findById(choice.originalPartnerId);
+        if (mainPartner) {
+          await this.registerPaymentForPartner(
+            from, mainPartner, mainPartner.montoCuota, choice.parsedVoucher,
+            choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+            paymentMonth, paymentYear,
+          );
+        }
+
+        // 2) Sponsored partner payment with the excess
+        const sponsoredPartner = await this.partnersService.findById(sponsored.id);
+        if (sponsoredPartner) {
+          const amountForSponsored = Math.min(excessAmount, sponsoredPartner.montoCuota);
+          await this.registerPaymentForPartner(
+            from, sponsoredPartner, amountForSponsored, choice.parsedVoucher,
+            choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+            paymentMonth, paymentYear,
+          );
+        }
+      } else if (textLower === 'no' || textLower === '2') {
+        // Register full amount for main partner only
+        await this.redisService.del(KEY_WA_SPONSOR + from);
+        const mainPartner = await this.partnersService.findById(choice.originalPartnerId);
+        if (mainPartner) {
+          await this.registerPaymentForPartner(
+            from, mainPartner, choice.detectedAmount, choice.parsedVoucher,
+            choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+            paymentMonth, paymentYear,
+          );
+        }
+      } else {
+        const sp = choice.sponsoredOptions[0];
+        const amountForSponsored = Math.min(excessAmount, sp.montoCuota);
+        await this.messagingService.sendMessage(from,
+          `⚠️ No entendí tu respuesta.\n\n` +
+          `Responde *SÍ* para dividir: *$${choice.originalPartnerMontoCuota.toLocaleString('es-CO')}* para *${choice.originalPartnerName}* ` +
+          `y *$${amountForSponsored.toLocaleString('es-CO')}* para *${sp.nombre}*.\n` +
+          `O *NO* para registrar todo a nombre de *${choice.originalPartnerName}*.\n\n` +
+          `_Escribe CANCELAR para anular._`,
+        );
+      }
+    } else {
+      // Multiple sponsored options → pick by number or NO
+      if (textLower === 'no') {
+        await this.redisService.del(KEY_WA_SPONSOR + from);
+        const mainPartner = await this.partnersService.findById(choice.originalPartnerId);
+        if (mainPartner) {
+          await this.registerPaymentForPartner(
+            from, mainPartner, choice.detectedAmount, choice.parsedVoucher,
+            choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+            paymentMonth, paymentYear,
+          );
+        }
+      } else {
+        const num = parseInt(rawText.replace(/\D/g, ''), 10);
+        if (num >= 1 && num <= choice.sponsoredOptions.length) {
+          await this.redisService.del(KEY_WA_SPONSOR + from);
+          const sponsored = choice.sponsoredOptions[num - 1];
+
+          // 1) Main partner payment at their quota
+          const mainPartner = await this.partnersService.findById(choice.originalPartnerId);
+          if (mainPartner) {
+            await this.registerPaymentForPartner(
+              from, mainPartner, mainPartner.montoCuota, choice.parsedVoucher,
+              choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+              paymentMonth, paymentYear,
+            );
+          }
+
+          // 2) Sponsored partner payment with the excess
+          const sponsoredPartner = await this.partnersService.findById(sponsored.id);
+          if (sponsoredPartner) {
+            const amountForSponsored = Math.min(excessAmount, sponsoredPartner.montoCuota);
+            await this.registerPaymentForPartner(
+              from, sponsoredPartner, amountForSponsored, choice.parsedVoucher,
+              choice.imageUrl, choice.imageId, choice.messageId, true, choice.storageKey,
+              paymentMonth, paymentYear,
+            );
+          }
+        } else {
+          await this.messagingService.sendMessage(from,
+            `⚠️ No entendí tu respuesta.\n\n` +
+            `Responde con el *número* del patrocinado (1-${choice.sponsoredOptions.length}) para dividir el pago,\n` +
+            `o *NO* para registrar todo a nombre de *${choice.originalPartnerName}*.\n\n` +
             `_Escribe CANCELAR para anular._`,
           );
         }

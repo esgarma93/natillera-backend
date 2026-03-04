@@ -38,6 +38,14 @@ export interface PendingSponsorChoice {
   originalPartnerName: string;
   originalPartnerMontoCuota: number;
   storageKey?: string;
+  /** true when the amount covers the main partner + excess for sponsored */
+  isSplitPayment?: boolean;
+  /** excess amount = detectedAmount - originalPartnerMontoCuota */
+  excessAmount?: number;
+  /** pre-resolved billing month (avoids re-triggering month choice) */
+  overrideBillingMonth?: number;
+  /** pre-resolved billing year */
+  overrideBillingYear?: number;
   sponsoredOptions: Array<{
     id: string;
     nombre: string;
