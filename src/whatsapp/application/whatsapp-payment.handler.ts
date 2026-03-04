@@ -432,8 +432,14 @@ export class WhatsAppPaymentHandler {
 
       // ── Create new payment ──
       try {
+        // When the payment amount differs from the original voucher amount (e.g. split payment),
+        // use a copy of parsedVoucher with the adjusted amount so validation compares correctly.
+        const voucherForValidation = (parsedVoucher.amount !== null && parsedVoucher.amount !== detectedAmount)
+          ? { ...parsedVoucher, amount: detectedAmount }
+          : parsedVoucher;
+
         const validation = this.voucherParserService.validatePaymentVoucher(
-          parsedVoucher,
+          voucherForValidation,
           partner.montoCuota,
           paymentMonth,
           paymentYear,
