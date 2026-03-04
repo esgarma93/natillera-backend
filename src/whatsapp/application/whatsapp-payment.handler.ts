@@ -816,8 +816,11 @@ export class WhatsAppPaymentHandler {
    */
   async startAdminPayForPartner(from: string): Promise<void> {
     const now = new Date();
-    const month = now.getMonth() + 1;
-    const year = now.getFullYear();
+    const billing = determineBillingPeriod(now);
+    // For the admin "pay for others" list, use the billing period month.
+    // On ambiguous days (6-14), default to lateMonth (catching up on late payments).
+    const month = billing.status === 'ambiguous' ? billing.lateMonth! : billing.month;
+    const year = billing.status === 'ambiguous' ? billing.lateYear! : billing.year;
     const monthName = getMonthName(month);
 
     const allPartners = await this.partnersService.findAll();
