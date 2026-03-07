@@ -27,11 +27,43 @@ export function getMonthName(month: number): string {
 }
 
 /**
+ * Convert a Date to Colombian timezone (America/Bogota, UTC-5).
+ * Returns a new Date whose UTC methods still work as-is, but
+ * getDate/getMonth/getFullYear/getHours reflect Colombian local time.
+ * Useful for day-of-month checks (e.g. billing period cutoff on day 5).
+ */
+export function toColombiaDate(date: Date): Date {
+  // Format in Colombia timezone and re-parse to get local components
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Bogota',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type: string) => parts.find(p => p.type === type)?.value || '0';
+  return new Date(
+    parseInt(get('year'), 10),
+    parseInt(get('month'), 10) - 1,
+    parseInt(get('day'), 10),
+    parseInt(get('hour'), 10),
+    parseInt(get('minute'), 10),
+    parseInt(get('second'), 10),
+  );
+}
+
+/**
  * Determine the billing period for a payment based on the payment date.
  * The deadline to pay for month X is the 5th of month X+1.
  * - Day 1–5 of month X:  billing month = X-1 (previous month, still within deadline)
  * - Day 6–14 of month X: ambiguous — user must choose (X-1 late with penalty, or X early/on time)
  * - Day 15–31 of month X: billing month = X (current calendar month)
+ *
+ * IMPORTANT: All day/month checks use Colombian timezone (UTC-5).
  */
 export function determineBillingPeriod(date: Date): {
   month: number;
@@ -44,9 +76,10 @@ export function determineBillingPeriod(date: Date): {
   onTimeMonth?: number;
   onTimeYear?: number;
 } {
-  const day = date.getDate();
-  const calendarMonth = date.getMonth() + 1;
-  const calendarYear = date.getFullYear();
+  const col = toColombiaDate(date);
+  const day = col.getDate();
+  const calendarMonth = col.getMonth() + 1;
+  const calendarYear = col.getFullYear();
 
   // Previous month (for day 1-5 and ambiguous range)
   const prevMonth = calendarMonth === 1 ? 12 : calendarMonth - 1;

@@ -22,6 +22,7 @@ import {
   extractRaffleNumber,
   getMonthName,
   determineBillingPeriod,
+  toColombiaDate,
   buildVoucherRedirectUrl,
 } from './whatsapp.utils';
 
@@ -132,8 +133,9 @@ export class WhatsAppPaymentHandler {
         partner = await this.partnersService.findByNumeroRifa(raffleNumber);
       }
 
-      const currentMonth = new Date().getMonth() + 1;
-      const currentYear = new Date().getFullYear();
+      const nowCOT = toColombiaDate(new Date());
+      const currentMonth = nowCOT.getMonth() + 1;
+      const currentYear = nowCOT.getFullYear();
 
       // Upload voucher image to R2 cloud storage for persistence
       let persistentImageUrl = imageUrl;

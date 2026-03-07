@@ -3,7 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { WhatsAppMessagingService } from './whatsapp-messaging.service';
-import { getMonthName, getLastFridayOfMonth } from './whatsapp.utils';
+import { getMonthName, getLastFridayOfMonth, toColombiaDate } from './whatsapp.utils';
 
 /**
  * Handles scheduled (cron) WhatsApp notifications.
@@ -24,7 +24,7 @@ export class WhatsAppCronHandler {
    */
   @Cron('0 9 5 * *')
   async notifyUnpaidPartners(): Promise<void> {
-    const now = new Date();
+    const now = toColombiaDate(new Date());
     const month = now.getMonth() + 1;
     const year = now.getFullYear();
     const monthName = getMonthName(month);
