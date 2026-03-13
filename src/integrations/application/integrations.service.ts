@@ -59,7 +59,7 @@ export class IntegrationsService {
       date: dto.date,
       hostPartnerId: dto.hostPartnerId,
       hostPartnerName: host.nombre,
-      foodCostPerPerson: dto.foodCostPerPerson,
+      foodCostPerPerson: dto.foodCostPerPerson ?? 0,
       profitabilityPerPerson: activePeriod.profitabilityPerPerson,
       activityCostPerPerson: activePeriod.activityCostPerPerson,
       status: IntegrationStatus.UPCOMING,

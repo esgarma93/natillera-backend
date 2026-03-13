@@ -14,7 +14,8 @@ export class CreateIntegrationDto {
 
   @IsNumber()
   @Min(0)
-  foodCostPerPerson: number;
+  @IsOptional()
+  foodCostPerPerson?: number;
 
   @IsString()
   @IsOptional()
