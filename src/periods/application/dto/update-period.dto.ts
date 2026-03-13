@@ -26,6 +26,21 @@ export class UpdatePeriodDto {
   @IsOptional()
   monthlyFee?: number;
 
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  profitabilityPerPerson?: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  activityCostPerPerson?: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  raffleFee?: number;
+
   @IsEnum(PeriodStatus)
   @IsOptional()
   status?: PeriodStatus;

@@ -10,6 +10,7 @@ import { VouchersModule } from './vouchers/vouchers.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { RafflesModule } from './raffles/raffles.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
 
@@ -26,6 +27,7 @@ import { StorageModule } from './storage/storage.module';
     WhatsAppModule,
     VouchersModule,
     RafflesModule,
+    IntegrationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

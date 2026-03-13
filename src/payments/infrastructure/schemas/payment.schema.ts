@@ -54,6 +54,12 @@ export class PaymentSchema {
   @Prop()
   notes: string;
 
+  @Prop({ type: String, default: 'quota' })
+  type: string;
+
+  @Prop()
+  integrationId: string;
+
   @Prop()
   createdAt: Date;
 
@@ -63,5 +69,5 @@ export class PaymentSchema {
 
 export const PaymentSchemaFactory = SchemaFactory.createForClass(PaymentSchema);
 
-// Create compound index for unique payment per partner per month per period
-PaymentSchemaFactory.index({ partnerId: 1, periodId: 1, month: 1 }, { unique: true });
+// Create compound index for unique payment per partner per month per period per type
+PaymentSchemaFactory.index({ partnerId: 1, periodId: 1, month: 1, type: 1, integrationId: 1 }, { unique: true });

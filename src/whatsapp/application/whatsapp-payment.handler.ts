@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
+import { IntegrationsService } from '../../integrations/application/integrations.service';
 import { RedisService } from '../../redis/redis.service';
 import { StorageService } from '../../storage/storage.service';
 import { OcrService } from './ocr.service';
@@ -10,11 +11,13 @@ import {
   PendingSession,
   PendingSponsorChoice,
   PendingMonthChoice,
+  PendingIntegrationChoice,
   AdminPaySession,
   KEY_WA_PENDING,
   KEY_WA_SPONSOR,
   KEY_WA_MONTH_CHOICE,
   KEY_WA_ADMIN_PAY,
+  KEY_WA_INTEGRATION_CHOICE,
   PENDING_SESSION_TTL,
 } from './whatsapp.types';
 import {
@@ -37,6 +40,7 @@ export class WhatsAppPaymentHandler {
   constructor(
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
+    private readonly integrationsService: IntegrationsService,
     private readonly redisService: RedisService,
     private readonly storageService: StorageService,
     private readonly ocrService: OcrService,
@@ -259,6 +263,42 @@ export class WhatsAppPaymentHandler {
 
       paymentMonth = billing.month;
       paymentYear = billing.year;
+    }
+
+    // ── Check for active integration: ask user if payment is for quota or integration ──
+    if (!skipSponsorCheck && detectedAmount !== null) {
+      const pendingIntegrations = await this.integrationsService.findPendingForPayment();
+      if (pendingIntegrations.length > 0) {
+        const integration = pendingIntegrations[0];
+        await this.redisService.set(KEY_WA_INTEGRATION_CHOICE + from, {
+          partnerId: partner.id,
+          partnerName: partner.nombre,
+          partnerMontoCuota: partner.montoCuota,
+          detectedAmount,
+          parsedVoucher,
+          imageUrl: imageUrl,
+          imageId,
+          messageId,
+          storageKey,
+          billingMonth: paymentMonth,
+          billingYear: paymentYear,
+          latePenalty,
+          integrationId: integration.id,
+          integrationName: integration.name,
+          integrationTotalCostPerPerson: integration.totalCostPerPerson,
+        } as PendingIntegrationChoice, PENDING_SESSION_TTL);
+
+        await this.messagingService.sendMessage(from,
+          `🎉 *Hay una integración activa: ${integration.name}*\n\n` +
+          `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
+          `👤 Socio: *${partner.nombre}*\n\n` +
+          `¿Este pago es para?\n` +
+          `1️⃣ *Cuota mensual* — $${partner.montoCuota.toLocaleString('es-CO')}\n` +
+          `2️⃣ *Integración (${integration.name})* — $${integration.totalCostPerPerson.toLocaleString('es-CO')}\n\n` +
+          `_Responde *1* o *2*. Escribe *CANCELAR* para anular._`,
+        );
+        return;
+      }
     }
 
     // Fetch sponsor info if partner has one
@@ -769,6 +809,105 @@ export class WhatsAppPaymentHandler {
         `⚠️ No entendí tu respuesta.\n\n` +
         `Responde *1* para *${getMonthName(choice.lateMonth)} ${choice.lateYear}* (con multa de $${choice.penalty.toLocaleString('es-CO')})\n` +
         `o *2* para *${getMonthName(choice.onTimeMonth)} ${choice.onTimeYear}* (a tiempo).\n\n` +
+        `_Escribe CANCELAR para anular._`,
+      );
+    }
+  }
+
+  /**
+   * Handle the user's response when asked whether payment is for monthly quota or integration.
+   */
+  async handleIntegrationChoice(from: string, text: string, choice: PendingIntegrationChoice): Promise<void> {
+    const option = text.trim();
+
+    if (option === '1') {
+      // Quota payment — proceed with normal flow (skip integration check via skipSponsorCheck=false + month override)
+      await this.redisService.del(KEY_WA_INTEGRATION_CHOICE + from);
+      const partner = await this.partnersService.findById(choice.partnerId);
+      if (!partner) {
+        await this.messagingService.sendMessage(from, '❌ No se encontró el socio. Intenta enviar el comprobante de nuevo.');
+        return;
+      }
+      // re-enter registerPaymentForPartner but skip the integration check by passing skipSponsorCheck=false
+      // and overrideBillingMonth/Year so it skips billing period logic
+      await this.registerPaymentForPartner(
+        from, partner, choice.detectedAmount, choice.parsedVoucher,
+        choice.imageUrl, choice.imageId, choice.messageId,
+        true, choice.storageKey,
+        choice.billingMonth, choice.billingYear, choice.latePenalty,
+      );
+    } else if (option === '2') {
+      // Integration payment — create payment with type='integration'
+      await this.redisService.del(KEY_WA_INTEGRATION_CHOICE + from);
+
+      try {
+        const voucherForValidation = (choice.parsedVoucher.amount !== null && choice.parsedVoucher.amount !== choice.detectedAmount)
+          ? { ...choice.parsedVoucher, amount: choice.detectedAmount }
+          : choice.parsedVoucher;
+
+        const validation = this.voucherParserService.validatePaymentVoucher(
+          voucherForValidation,
+          choice.integrationTotalCostPerPerson,
+          choice.billingMonth,
+          choice.billingYear,
+        );
+
+        const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
+          choice.partnerId,
+          choice.detectedAmount,
+          choice.imageUrl,
+          choice.messageId,
+          choice.parsedVoucher.type,
+          choice.parsedVoucher.date,
+          validation.issues,
+          choice.storageKey,
+          from,
+          choice.billingMonth,
+          'integration',
+          choice.integrationId,
+        );
+
+        // Mark attendee as paid in the integration
+        await this.integrationsService.markAttendeePaid(
+          choice.integrationId, choice.partnerId, paymentResult.id,
+        );
+
+        this.logger.log(`Integration payment created for ${choice.partnerName}, integration: ${choice.integrationName}`);
+
+        let responseMessage =
+          `📸 *¡Pago de integración recibido!*\n\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `👤 Socio: *${choice.partnerName}*\n` +
+          `🎉 Integración: *${choice.integrationName}*\n` +
+          `💰 Monto detectado: *$${choice.detectedAmount.toLocaleString('es-CO')}*\n` +
+          `💵 Costo esperado: *$${choice.integrationTotalCostPerPerson.toLocaleString('es-CO')}*\n` +
+          `🏦 Tipo: *${choice.parsedVoucher.type.toUpperCase()}*\n` +
+          `━━━━━━━━━━━━━━━━━━\n\n`;
+
+        if (validation.issues.length > 0) {
+          responseMessage +=
+            `⚠️ Estado: *PENDIENTE DE REVISIÓN*\n\n` +
+            `Observaciones:\n${validation.issues.map((i) => `• ${i}`).join('\n')}\n\n` +
+            `El pago será revisado manualmente por un administrador.`;
+        } else {
+          responseMessage +=
+            `✅ *¡Pago de integración registrado exitosamente!*\n` +
+            `Será verificado pronto por el administrador.`;
+        }
+
+        await this.messagingService.sendMessage(from, responseMessage);
+      } catch (paymentError: any) {
+        this.logger.error('Error creating integration payment:', paymentError);
+        await this.messagingService.sendMessage(from,
+          `📸 Comprobante recibido, pero ocurrió un error al registrar el pago de integración.\n` +
+          `Por favor contacta al administrador.`,
+        );
+      }
+    } else {
+      await this.messagingService.sendMessage(from,
+        `⚠️ No entendí tu respuesta.\n\n` +
+        `Responde *1* para *Cuota mensual*\n` +
+        `o *2* para *Integración (${choice.integrationName})*.\n\n` +
         `_Escribe CANCELAR para anular._`,
       );
     }

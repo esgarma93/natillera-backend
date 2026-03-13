@@ -4,6 +4,8 @@ export enum PaymentStatus {
   REJECTED = 'rejected',
 }
 
+export type PaymentType = 'quota' | 'integration';
+
 export interface IPayment {
   id?: string;
   partnerId: string;
@@ -22,6 +24,10 @@ export interface IPayment {
   voucherStorageKey?: string;
   whatsappMessageId?: string;
   notes?: string;
+  /** Type of payment: 'quota' for monthly fee, 'integration' for integration event */
+  type: PaymentType;
+  /** Integration ID when type is 'integration' */
+  integrationId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -44,6 +50,8 @@ export class Payment implements IPayment {
   voucherStorageKey?: string;
   whatsappMessageId?: string;
   notes?: string;
+  type: PaymentType;
+  integrationId?: string;
   createdAt: Date;
   updatedAt: Date;
 
@@ -65,6 +73,8 @@ export class Payment implements IPayment {
     this.voucherStorageKey = partial.voucherStorageKey;
     this.whatsappMessageId = partial.whatsappMessageId;
     this.notes = partial.notes;
+    this.type = partial.type || 'quota';
+    this.integrationId = partial.integrationId;
     this.createdAt = partial.createdAt || new Date();
     this.updatedAt = partial.updatedAt || new Date();
   }

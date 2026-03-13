@@ -183,6 +183,8 @@ export class PaymentsService {
     voucherStorageKey?: string,
     whatsappFrom?: string,
     overrideMonth?: number,
+    paymentType: 'quota' | 'integration' = 'quota',
+    integrationId?: string,
   ): Promise<PaymentResponseDto> {
     // Get active period
     const activePeriod = await this.periodsService.getActivePeriod();
@@ -242,6 +244,8 @@ export class PaymentsService {
         }
         return base;
       })(),
+      type: paymentType,
+      integrationId,
     });
 
     const created = await this.paymentRepository.create(payment);
@@ -486,6 +490,8 @@ export class PaymentsService {
       voucherStorageKey: payment.voucherStorageKey,
       whatsappMessageId: payment.whatsappMessageId,
       notes: payment.notes,
+      type: payment.type,
+      integrationId: payment.integrationId,
       createdAt: payment.createdAt,
       updatedAt: payment.updatedAt,
     };

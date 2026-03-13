@@ -116,6 +116,8 @@ export class MongoPaymentRepository implements PaymentRepository {
       voucherStorageKey: doc.voucherStorageKey,
       whatsappMessageId: doc.whatsappMessageId,
       notes: doc.notes,
+      type: (doc.type || 'quota') as 'quota' | 'integration',
+      integrationId: doc.integrationId,
       createdAt: doc.createdAt,
       updatedAt: doc.updatedAt,
     });

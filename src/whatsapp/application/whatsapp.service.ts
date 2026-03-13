@@ -9,6 +9,7 @@ import {
   AuthSession,
   PendingSponsorChoice,
   PendingMonthChoice,
+  PendingIntegrationChoice,
   PendingSession,
   AdminPaySession,
   KEY_WA_AUTH,
@@ -17,6 +18,7 @@ import {
   KEY_WA_MONTH_CHOICE,
   KEY_WA_VOUCHER_MONTH,
   KEY_WA_ADMIN_PAY,
+  KEY_WA_INTEGRATION_CHOICE,
   AUTH_SESSION_TTL,
   PENDING_SESSION_TTL,
 } from './whatsapp.types';
@@ -125,6 +127,18 @@ export class WhatsAppService {
         return;
       }
       await this.paymentHandler.handleSponsorChoice(from, text, sponsorChoice);
+      return;
+    }
+
+    // ── Pending integration choice (quota vs integration payment) ──
+    const integrationChoice = await this.redisService.get<PendingIntegrationChoice>(KEY_WA_INTEGRATION_CHOICE + from);
+    if (integrationChoice) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_INTEGRATION_CHOICE + from);
+        await this.messagingService.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
+        return;
+      }
+      await this.paymentHandler.handleIntegrationChoice(from, text, integrationChoice);
       return;
     }
 

@@ -24,6 +24,15 @@ export class PeriodSchema {
   @Prop({ required: true })
   monthlyFee: number;
 
+  @Prop({ default: 6000 })
+  profitabilityPerPerson: number;
+
+  @Prop({ default: 6000 })
+  activityCostPerPerson: number;
+
+  @Prop({ default: 7000 })
+  raffleFee: number;
+
   @Prop({ type: String, required: true, enum: PeriodStatus, default: PeriodStatus.UPCOMING })
   status: PeriodStatus;
 

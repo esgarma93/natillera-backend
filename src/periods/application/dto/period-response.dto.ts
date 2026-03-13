@@ -8,6 +8,9 @@ export class PeriodResponseDto {
   startDate: Date;
   endDate: Date;
   monthlyFee: number;
+  profitabilityPerPerson: number;
+  activityCostPerPerson: number;
+  raffleFee: number;
   status: PeriodStatus;
   totalMonths: number;
   createdAt: Date;

@@ -1,4 +1,4 @@
-import { PaymentStatus } from '../../domain/payment.entity';
+import { PaymentStatus, PaymentType } from '../../domain/payment.entity';
 
 export class PaymentResponseDto {
   id: string;
@@ -19,6 +19,8 @@ export class PaymentResponseDto {
   voucherStorageKey?: string;
   whatsappMessageId?: string;
   notes?: string;
+  type: PaymentType;
+  integrationId?: string;
   createdAt: Date;
   updatedAt: Date;
 }

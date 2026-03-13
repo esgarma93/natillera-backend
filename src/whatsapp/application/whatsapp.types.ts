@@ -5,6 +5,7 @@ export const KEY_WA_SPONSOR = 'wa:sponsor:';
 export const KEY_WA_MONTH_CHOICE = 'wa:month_choice:';
 export const KEY_WA_VOUCHER_MONTH = 'wa:voucher_month:';
 export const KEY_WA_ADMIN_PAY = 'wa:admin_pay:';
+export const KEY_WA_INTEGRATION_CHOICE = 'wa:integration_choice:';
 
 // ─────────────────── TTLs (seconds) ───────────────────
 export const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
@@ -91,4 +92,23 @@ export interface AdminPaySession {
   selectedPartnerName?: string;
   selectedPartnerNumeroRifa?: number;
   selectedPartnerMontoCuota?: number;
+}
+
+/** Pending integration-vs-quota choice: stored while waiting for user to say quota or integration */
+export interface PendingIntegrationChoice {
+  partnerId: string;
+  partnerName: string;
+  partnerMontoCuota: number;
+  detectedAmount: number;
+  parsedVoucher: any;
+  imageUrl: string;
+  imageId: string;
+  messageId: string;
+  storageKey?: string;
+  billingMonth: number;
+  billingYear: number;
+  latePenalty?: number;
+  integrationId: string;
+  integrationName: string;
+  integrationTotalCostPerPerson: number;
 }
