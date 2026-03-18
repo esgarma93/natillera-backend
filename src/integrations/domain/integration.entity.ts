@@ -35,7 +35,7 @@ export interface IIntegration {
   activityCostPerPerson: number;
   /** Computed: foodCostPerPerson + profitabilityPerPerson + activityCostPerPerson */
   totalCostPerPerson: number;
-  /** Computed: Math.round(totalCostPerPerson / 2) — absent partners pay half */
+  /** Computed: Math.round(foodCostPerPerson / 2) + profitabilityPerPerson + activityCostPerPerson — absent partners pay half food + full fees */
   absentPenalty: number;
   /** Winner of the activity/game gets half of the activity pot */
   activityWinnerId?: string;
@@ -108,7 +108,7 @@ export class Integration implements IIntegration {
   }
 
   computeAbsentPenalty(): number {
-    return Math.round(this.computeTotalCost() / 2);
+    return Math.round(this.foodCostPerPerson / 2) + this.profitabilityPerPerson + this.activityCostPerPerson;
   }
 
   computeActivityPot(): number {
@@ -140,7 +140,7 @@ export class Integration implements IIntegration {
   /** Total profitability for the natillera */
   getProfitability(): number {
     const profitFromAttendees = this.profitabilityPerPerson * this.attendees.length;
-    const profitFromAbsent = this.absentPartnerIds.length * this.absentPenalty;
+    const profitFromAbsent = (Math.round(this.foodCostPerPerson / 2) + this.profitabilityPerPerson) * this.absentPartnerIds.length;
     const activityProfit = this.activityPot - this.activityPrize;
     return profitFromAttendees + profitFromAbsent + activityProfit;
   }

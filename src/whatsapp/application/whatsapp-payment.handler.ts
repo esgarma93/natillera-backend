@@ -286,6 +286,7 @@ export class WhatsAppPaymentHandler {
           integrationId: integration.id,
           integrationName: integration.name,
           integrationTotalCostPerPerson: integration.totalCostPerPerson,
+          integrationAbsentPenalty: integration.absentPenalty,
         } as PendingIntegrationChoice, PENDING_SESSION_TTL);
 
         await this.messagingService.sendMessage(from,
@@ -294,7 +295,7 @@ export class WhatsAppPaymentHandler {
           `👤 Socio: *${partner.nombre}*\n\n` +
           `¿Este pago es para?\n` +
           `1️⃣ *Cuota mensual* — $${partner.montoCuota.toLocaleString('es-CO')}\n` +
-          `2️⃣ *Integración (${integration.name})* — $${integration.totalCostPerPerson.toLocaleString('es-CO')}\n\n` +
+          `2️⃣ *Integración (${integration.name})* — Asistente: $${integration.totalCostPerPerson.toLocaleString('es-CO')} / Ausente: $${integration.absentPenalty.toLocaleString('es-CO')}\n\n` +
           `_Responde *1* o *2*. Escribe *CANCELAR* para anular._`,
         );
         return;
@@ -837,24 +838,32 @@ export class WhatsAppPaymentHandler {
         choice.billingMonth, choice.billingYear, choice.latePenalty,
       );
     } else if (option === '2') {
-      // Integration payment — create payment with type='integration'
+      // Integration payment — auto-detect attendee vs absent based on amount
       await this.redisService.del(KEY_WA_INTEGRATION_CHOICE + from);
 
+      const amount = choice.detectedAmount;
+      const fullCost = choice.integrationTotalCostPerPerson;
+      const absentPenalty = choice.integrationAbsentPenalty;
+
+      // Determine if attendee or absent based on amount
+      const isAbsent = amount === absentPenalty && amount !== fullCost;
+      const expectedAmount = isAbsent ? absentPenalty : fullCost;
+
       try {
-        const voucherForValidation = (choice.parsedVoucher.amount !== null && choice.parsedVoucher.amount !== choice.detectedAmount)
-          ? { ...choice.parsedVoucher, amount: choice.detectedAmount }
+        const voucherForValidation = (choice.parsedVoucher.amount !== null && choice.parsedVoucher.amount !== amount)
+          ? { ...choice.parsedVoucher, amount }
           : choice.parsedVoucher;
 
         const validation = this.voucherParserService.validatePaymentVoucher(
           voucherForValidation,
-          choice.integrationTotalCostPerPerson,
+          expectedAmount,
           choice.billingMonth,
           choice.billingYear,
         );
 
         const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
           choice.partnerId,
-          choice.detectedAmount,
+          amount,
           choice.imageUrl,
           choice.messageId,
           choice.parsedVoucher.type,
@@ -867,20 +876,28 @@ export class WhatsAppPaymentHandler {
           choice.integrationId,
         );
 
-        // Mark attendee as paid in the integration
-        await this.integrationsService.markAttendeePaid(
-          choice.integrationId, choice.partnerId, paymentResult.id,
-        );
+        // Auto-classify: add as attendee or absent in the integration
+        if (isAbsent) {
+          await this.integrationsService.addAbsentFromPayment(
+            choice.integrationId, choice.partnerId,
+          );
+        } else {
+          await this.integrationsService.addAttendeeFromPayment(
+            choice.integrationId, choice.partnerId, choice.partnerName, paymentResult.id,
+          );
+        }
 
-        this.logger.log(`Integration payment created for ${choice.partnerName}, integration: ${choice.integrationName}`);
+        this.logger.log(`Integration payment (${isAbsent ? 'absent' : 'attendee'}) created for ${choice.partnerName}, integration: ${choice.integrationName}`);
 
+        const statusLabel = isAbsent ? 'AUSENTE' : 'ASISTENTE';
         let responseMessage =
           `📸 *¡Pago de integración recibido!*\n\n` +
           `━━━━━━━━━━━━━━━━━━\n` +
           `👤 Socio: *${choice.partnerName}*\n` +
           `🎉 Integración: *${choice.integrationName}*\n` +
-          `💰 Monto detectado: *$${choice.detectedAmount.toLocaleString('es-CO')}*\n` +
-          `💵 Costo esperado: *$${choice.integrationTotalCostPerPerson.toLocaleString('es-CO')}*\n` +
+          `📋 Estado: *${statusLabel}*\n` +
+          `💰 Monto detectado: *$${amount.toLocaleString('es-CO')}*\n` +
+          `💵 Costo esperado: *$${expectedAmount.toLocaleString('es-CO')}*\n` +
           `🏦 Tipo: *${choice.parsedVoucher.type.toUpperCase()}*\n` +
           `━━━━━━━━━━━━━━━━━━\n\n`;
 

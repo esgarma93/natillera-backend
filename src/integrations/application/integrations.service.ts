@@ -186,6 +186,50 @@ export class IntegrationsService {
     await this.integrationRepository.update(integrationId, { attendees: integration.attendees } as any);
   }
 
+  /** Add a partner as attendee from a WhatsApp payment and mark as paid */
+  async addAttendeeFromPayment(integrationId: string, partnerId: string, partnerName: string, paymentId: string): Promise<void> {
+    const integration = await this.integrationRepository.findById(integrationId);
+    if (!integration) return;
+
+    // Avoid duplicates
+    const existing = integration.attendees.find(a => a.partnerId === partnerId && !a.isGuest);
+    if (existing) {
+      existing.paid = true;
+      existing.paymentId = paymentId;
+    } else {
+      integration.attendees.push({
+        partnerId,
+        partnerName,
+        isGuest: false,
+        paid: true,
+        paymentId,
+      });
+    }
+
+    // Remove from absents if previously marked
+    integration.absentPartnerIds = integration.absentPartnerIds.filter(id => id !== partnerId);
+
+    integration.recalculate();
+    await this.integrationRepository.update(integrationId, integration);
+  }
+
+  /** Add a partner as absent from a WhatsApp payment */
+  async addAbsentFromPayment(integrationId: string, partnerId: string): Promise<void> {
+    const integration = await this.integrationRepository.findById(integrationId);
+    if (!integration) return;
+
+    // Avoid duplicates
+    if (!integration.absentPartnerIds.includes(partnerId)) {
+      integration.absentPartnerIds.push(partnerId);
+    }
+
+    // Remove from attendees if previously added
+    integration.attendees = integration.attendees.filter(a => a.partnerId !== partnerId || a.isGuest);
+
+    integration.recalculate();
+    await this.integrationRepository.update(integrationId, integration);
+  }
+
   private toResponseDto(integration: Integration): IntegrationResponseDto {
     return {
       id: integration.id!,

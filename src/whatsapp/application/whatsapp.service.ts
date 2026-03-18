@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { RedisService } from '../../redis/redis.service';
 import { PartnersService } from '../../partners/application/partners.service';
+import { IntegrationsService } from '../../integrations/application/integrations.service';
 import { WhatsAppMessagingService } from './whatsapp-messaging.service';
 import { WhatsAppAuthHandler } from './whatsapp-auth.handler';
 import { WhatsAppPaymentHandler } from './whatsapp-payment.handler';
@@ -36,6 +37,7 @@ export class WhatsAppService {
   constructor(
     private readonly redisService: RedisService,
     private readonly partnersService: PartnersService,
+    private readonly integrationsService: IntegrationsService,
     private readonly messagingService: WhatsAppMessagingService,
     private readonly authHandler: WhatsAppAuthHandler,
     private readonly paymentHandler: WhatsAppPaymentHandler,
@@ -318,6 +320,21 @@ export class WhatsAppService {
       return;
     }
 
+    // ── GANADOR command — admin sets activity winner for active integration ──
+    if (textLower.startsWith('ganador')) {
+      if (authSession?.authenticated) {
+        await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
+        if (await this.messagingService.isAdmin(from)) {
+          await this.handleSetActivityWinner(from, text);
+        } else {
+          await this.messagingService.sendMessage(from, `⚠️ Este comando está disponible solo para administradores.`);
+        }
+      } else {
+        await this.authHandler.startAuthFlow(from);
+      }
+      return;
+    }
+
     // ── Default: guide user ──
     await this.messagingService.sendMessage(
       from,
@@ -327,5 +344,79 @@ export class WhatsAppService {
       `ℹ️ Escribir *MENU* para ver más opciones\n\n` +
       `_(Requiere PIN) · Solo se aceptan comprobantes de Nequi o Bancolombia._`,
     );
+  }
+
+  /**
+   * Admin command: GANADOR <raffle_number>
+   * Sets the activity winner for the active/upcoming integration.
+   * Usage: "GANADOR #5" or "GANADOR 5"
+   */
+  private async handleSetActivityWinner(from: string, text: string): Promise<void> {
+    const parts = text.trim().split(/\s+/);
+    if (parts.length < 2) {
+      // Show active integration attendees so admin can pick
+      const pending = await this.integrationsService.findPendingForPayment();
+      const active = pending.length > 0 ? pending[0] : await this.integrationsService.findNextUpcoming();
+      if (!active) {
+        await this.messagingService.sendMessage(from, '❌ No hay integraciones activas o próximas.');
+        return;
+      }
+
+      if (!active.attendees || active.attendees.length === 0) {
+        await this.messagingService.sendMessage(from,
+          `🎉 *${active.name}*\n\n` +
+          `Aún no hay asistentes registrados.\n` +
+          `Primero los socios deben enviar su pago de integración.`,
+        );
+        return;
+      }
+
+      let msg = `🎉 *${active.name}*\n\n` +
+        `Asistentes:\n`;
+      active.attendees.filter(a => !a.isGuest).forEach((att) => {
+        msg += `• ${att.partnerName}\n`;
+      });
+      msg += `\nPara asignar el ganador escribe:\n` +
+        `*GANADOR <número_rifa>*\n` +
+        `Ej: *GANADOR #5*`;
+
+      await this.messagingService.sendMessage(from, msg);
+      return;
+    }
+
+    const raffleNumber = extractRaffleNumber(parts.slice(1).join(' '));
+    const directNum = raffleNumber ?? parseInt(parts[1].replace(/\D/g, ''), 10);
+
+    if (!directNum || isNaN(directNum)) {
+      await this.messagingService.sendMessage(from,
+        `⚠️ Formato incorrecto.\n\nUsa: *GANADOR <número_rifa>*\nEj: *GANADOR #5* o *GANADOR 5*`,
+      );
+      return;
+    }
+
+    const partner = await this.partnersService.findByNumeroRifa(directNum);
+    if (!partner) {
+      await this.messagingService.sendMessage(from, `❌ No se encontró un socio con el número de rifa *#${directNum}*.`);
+      return;
+    }
+
+    const pending = await this.integrationsService.findPendingForPayment();
+    const active = pending.length > 0 ? pending[0] : await this.integrationsService.findNextUpcoming();
+    if (!active) {
+      await this.messagingService.sendMessage(from, '❌ No hay integraciones activas o próximas.');
+      return;
+    }
+
+    try {
+      await this.integrationsService.update(active.id, { activityWinnerId: partner.id });
+      await this.messagingService.sendMessage(from,
+        `✅ *¡Ganador asignado!*\n\n` +
+        `🎉 Integración: *${active.name}*\n` +
+        `🏆 Ganador: *${partner.nombre}* (Rifa #${partner.numeroRifa})`,
+      );
+    } catch (err) {
+      this.logger.error('Error setting activity winner:', err);
+      await this.messagingService.sendMessage(from, '❌ Error al asignar el ganador. Intenta de nuevo.');
+    }
   }
 }

@@ -111,4 +111,5 @@ export interface PendingIntegrationChoice {
   integrationId: string;
   integrationName: string;
   integrationTotalCostPerPerson: number;
+  integrationAbsentPenalty: number;
 }
