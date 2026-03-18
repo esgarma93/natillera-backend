@@ -4,6 +4,7 @@ import { VoucherParserService } from '../../whatsapp/application/voucher-parser.
 import { WhatsAppService } from '../../whatsapp/application/whatsapp.service';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
+import { IntegrationsService } from '../../integrations/application/integrations.service';
 import { StorageService } from '../../storage/storage.service';
 import { ProcessVoucherDto } from './dto/process-voucher.dto';
 import { VoucherResultDto } from './dto/voucher-result.dto';
@@ -18,6 +19,7 @@ export class VouchersService {
     private readonly whatsappService: WhatsAppService,
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
+    private readonly integrationsService: IntegrationsService,
     private readonly storageService: StorageService,
   ) {}
 
@@ -88,6 +90,114 @@ export class VouchersService {
     // Determine month and year (use provided values or current date)
     const month = dto.month || (new Date().getMonth() + 1);
     const year = dto.year || new Date().getFullYear();
+
+    // ── Integration payment shortcut ──
+    if (dto.type === 'integration' && dto.integrationId) {
+      const integration = await this.integrationsService.findById(dto.integrationId);
+
+      const validation = this.voucherParserService.validatePaymentVoucher(
+        parsedVoucher,
+        integration.totalCostPerPerson,
+        month,
+        year,
+      );
+
+      // Check for critical validation errors
+      const hasCriticalError = validation.issues.some(issue =>
+        issue.includes('cuenta destino') ||
+        issue.includes('cuenta de la natillera') ||
+        issue.includes('No se pudo detectar la cuenta destino'),
+      );
+
+      if (hasCriticalError) {
+        return {
+          success: false,
+          voucher: {
+            type: parsedVoucher.type,
+            amount: detectedAmount,
+            date: parsedVoucher.date?.toISOString() || null,
+            destinationAccount: parsedVoucher.recipientAccount,
+            referenceNumber: parsedVoucher.referenceNumber,
+            confidence: parsedVoucher.confidence,
+            rawText: ocrResult.rawText,
+          },
+          validation: { isValid: false, issues: validation.issues },
+          error: 'Destination account validation failed',
+        };
+      }
+
+      if (dto.notes) {
+        validation.issues.push(`Notas: ${dto.notes}`);
+      }
+
+      // Upload voucher image to R2
+      let r2Url: string | null = null;
+      let r2Key: string | null = null;
+      if (this.storageService.isEnabled() && dto.imageBase64) {
+        try {
+          const base64Data = dto.imageBase64.includes(',') ? dto.imageBase64.split(',')[1] : dto.imageBase64;
+          const isPng = dto.imageBase64.startsWith('data:image/png');
+          const mimeType = isPng ? 'image/png' : 'image/jpeg';
+          const buffer = Buffer.from(base64Data, 'base64');
+          r2Key = this.storageService.buildVoucherKey(partner.id, parsedVoucher.type || 'portal', mimeType);
+          r2Url = await this.storageService.uploadVoucher(buffer, r2Key, mimeType);
+        } catch (r2Err) {
+          this.logger.error('Error uploading voucher to R2:', r2Err);
+        }
+      }
+
+      const payment = await this.paymentsService.createFromWhatsAppWithValidation(
+        partner.id,
+        detectedAmount,
+        r2Url,
+        null,
+        parsedVoucher.type,
+        parsedVoucher.date,
+        validation.issues,
+        r2Key,
+        undefined,
+        month,
+        'integration',
+        dto.integrationId,
+      );
+
+      // Auto-classify attendee vs absent
+      const isAbsent = detectedAmount === integration.absentPenalty && detectedAmount !== integration.totalCostPerPerson;
+      if (isAbsent) {
+        await this.integrationsService.addAbsentFromPayment(dto.integrationId, partner.id);
+      } else {
+        await this.integrationsService.addAttendeeFromPayment(dto.integrationId, partner.id, partner.nombre, payment.id);
+      }
+
+      return {
+        success: true,
+        payment: {
+          id: payment.id,
+          partnerId: payment.partnerId,
+          partnerName: payment.partnerName,
+          amount: payment.amount,
+          expectedAmount: payment.expectedAmount,
+          month: payment.month,
+          monthName: payment.monthName,
+          periodYear: payment.periodYear,
+          status: payment.status,
+          paymentDate: payment.paymentDate.toString(),
+        },
+        voucher: {
+          type: parsedVoucher.type,
+          amount: detectedAmount,
+          date: parsedVoucher.date?.toISOString() || null,
+          destinationAccount: parsedVoucher.recipientAccount,
+          referenceNumber: parsedVoucher.referenceNumber,
+          confidence: parsedVoucher.confidence,
+          rawText: ocrResult.rawText,
+        },
+        validation: {
+          isValid: validation.issues.length === 0,
+          issues: validation.issues,
+        },
+      };
+    }
 
     // Validate voucher against expected amount and payment period
     const validation = this.voucherParserService.validatePaymentVoucher(

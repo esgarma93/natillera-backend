@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString, Min, Max, IsArray } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, Min, Max, IsArray, IsIn } from 'class-validator';
 
 export class ProcessVoucherDto {
   @IsNotEmpty()
@@ -28,5 +28,14 @@ export class ProcessVoucherDto {
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  sponsoredPartnerIds?: string[]; // IDs of sponsored partners to apply excess payment
+  sponsoredPartnerIds?: string[];
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['quota', 'integration'])
+  type?: 'quota' | 'integration';
+
+  @IsOptional()
+  @IsString()
+  integrationId?: string;
 }
