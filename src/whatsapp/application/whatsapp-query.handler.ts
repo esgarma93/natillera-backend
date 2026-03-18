@@ -1,6 +1,7 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
+import { IntegrationsService } from '../../integrations/application/integrations.service';
 import { RafflesService } from '../../raffles/application/raffles.service';
 import { StorageService } from '../../storage/storage.service';
 import { RedisService } from '../../redis/redis.service';
@@ -27,6 +28,7 @@ export class WhatsAppQueryHandler {
   constructor(
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
+    private readonly integrationsService: IntegrationsService,
     @Inject(forwardRef(() => RafflesService))
     private readonly rafflesService: RafflesService,
     private readonly storageService: StorageService,
@@ -340,12 +342,13 @@ export class WhatsAppQueryHandler {
         // No month specified → ask which month to query
         await this.redisService.set(KEY_WA_VOUCHER_MONTH + from, { active: true }, PENDING_SESSION_TTL);
         await this.messagingService.sendMessage(from,
-          `📋 *¿De qué mes quieres ver los comprobantes?*\n\n` +
-          `Ingresa el número del mes (1-12):\n` +
+          `📋 *¿Qué comprobantes quieres ver?*\n\n` +
+          `Ingresa el número del mes (1-12) para *cuotas*:\n` +
           `1 = Enero, 2 = Febrero, 3 = Marzo,\n` +
           `4 = Abril, 5 = Mayo, 6 = Junio,\n` +
           `7 = Julio, 8 = Agosto, 9 = Septiembre,\n` +
           `10 = Octubre, 11 = Noviembre, 12 = Diciembre\n\n` +
+          `O escribe *I* para ver comprobantes de *integraciones*.\n\n` +
           `_Escribe CANCELAR para anular._`,
         );
         return;
@@ -461,6 +464,98 @@ export class WhatsAppQueryHandler {
       await this.messagingService.sendMessage(
         from,
         `❌ Ocurrió un error al consultar los comprobantes.\nPor favor intenta de nuevo.`,
+      );
+    }
+  }
+
+  /**
+   * Admin command: send integration voucher summary.
+   * Shows all active/upcoming integrations with attendees, absents and payment vouchers.
+   */
+  async sendIntegrationVouchers(from: string): Promise<void> {
+    try {
+      const now = new Date();
+      const year = now.getFullYear();
+      const integrations = await this.integrationsService.findByYear(year);
+
+      if (integrations.length === 0) {
+        await this.messagingService.sendMessage(from,
+          `📋 No hay integraciones registradas para *${year}*.\n\n` +
+          `_Usa *COMPROBANTES <mes>* para consultar comprobantes de cuotas._`,
+        );
+        return;
+      }
+
+      for (const integ of integrations) {
+        const attendeesCount = integ.attendees?.length || 0;
+        const absentCount = integ.absentPartnerIds?.length || 0;
+        const paidCount = (integ.attendees || []).filter(a => a.paid).length;
+        const unpaidAttendees = (integ.attendees || []).filter(a => !a.paid);
+
+        const statusLabels: Record<string, string> = {
+          upcoming: '📅 Próxima',
+          active: '✅ Activa',
+          settled: '📦 Liquidada',
+          cancelled: '❌ Cancelada',
+        };
+
+        let msg =
+          `🎉 *${integ.name}*\n` +
+          `${statusLabels[integ.status] || integ.status}\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `👥 Asistentes: *${attendeesCount}* (${paidCount} pagaron)\n` +
+          `🚫 Ausentes: *${absentCount}*\n` +
+          `💰 Costo/persona: *$${integ.totalCostPerPerson.toLocaleString('es-CO')}*\n` +
+          `💸 Multa ausente: *$${integ.absentPenalty.toLocaleString('es-CO')}*\n` +
+          `💵 Recaudado: *$${integ.totalCollected.toLocaleString('es-CO')}*\n` +
+          `📈 Ganancia: *$${integ.profitability.toLocaleString('es-CO')}*\n`;
+
+        if (integ.activityWinnerName) {
+          msg += `🏆 Ganador: *${integ.activityWinnerName}*\n`;
+        }
+
+        msg += `━━━━━━━━━━━━━━━━━━\n`;
+
+        // List attendees with payment status
+        if (attendeesCount > 0) {
+          msg += `\n📎 *Asistentes:*\n`;
+          for (const att of integ.attendees) {
+            const statusEmoji = att.paid ? '✅' : '⏳';
+            msg += `${statusEmoji} ${att.partnerName}`;
+            if (att.isGuest) msg += ` (invitado)`;
+            if (att.paid && att.paymentId) {
+              const voucherUrl = buildVoucherRedirectUrl(att.paymentId);
+              msg += `\n   🔗 ${voucherUrl}`;
+            }
+            msg += `\n`;
+          }
+        }
+
+        if (unpaidAttendees.length > 0) {
+          msg += `\n⚠️ *Sin pagar:* ${unpaidAttendees.map(a => a.partnerName).join(', ')}\n`;
+        }
+
+        // Split long messages
+        if (msg.length > 4096) {
+          const lines = msg.split('\n');
+          let chunk = '';
+          for (const line of lines) {
+            if ((chunk + '\n' + line).length > 4000 && chunk.length > 0) {
+              await this.messagingService.sendMessage(from, chunk);
+              chunk = line;
+            } else {
+              chunk = chunk ? chunk + '\n' + line : line;
+            }
+          }
+          if (chunk) await this.messagingService.sendMessage(from, chunk);
+        } else {
+          await this.messagingService.sendMessage(from, msg);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Error sending integration vouchers:', error);
+      await this.messagingService.sendMessage(from,
+        `❌ Ocurrió un error al consultar los comprobantes de integraciones.\nPor favor intenta de nuevo.`,
       );
     }
   }

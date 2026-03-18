@@ -164,13 +164,19 @@ export class WhatsAppService {
         await this.messagingService.sendMessage(from, '✅ Consulta cancelada.');
         return;
       }
+      // "I" or "INT" → integration vouchers
+      if (textLower === 'i' || textLower === 'int' || textLower === 'integracion' || textLower === 'integración' || textLower === 'integraciones') {
+        await this.redisService.del(KEY_WA_VOUCHER_MONTH + from);
+        await this.queryHandler.sendIntegrationVouchers(from);
+        return;
+      }
       const monthNum = parseInt(text.trim(), 10);
       if (monthNum >= 1 && monthNum <= 12) {
         await this.redisService.del(KEY_WA_VOUCHER_MONTH + from);
         await this.queryHandler.sendMonthlyVouchers(from, `COMPROBANTES ${monthNum}`);
         return;
       }
-      await this.messagingService.sendMessage(from, '⚠️ Por favor ingresa un número de mes válido (1-12).\n\n_Escribe CANCELAR para anular._');
+      await this.messagingService.sendMessage(from, '⚠️ Por favor ingresa un número de mes válido (1-12) o *I* para integraciones.\n\n_Escribe CANCELAR para anular._');
       return;
     }
 
@@ -310,7 +316,13 @@ export class WhatsAppService {
       if (authSession?.authenticated) {
         await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
         if (await this.messagingService.isAdmin(from)) {
-          await this.queryHandler.sendMonthlyVouchers(from, text);
+          // Check for "COMPROBANTES INT" or "COMPROBANTES INTEGRACION"
+          const parts = textLower.trim().split(/\s+/);
+          if (parts.length >= 2 && (parts[1] === 'int' || parts[1] === 'integracion' || parts[1] === 'integración' || parts[1] === 'integraciones')) {
+            await this.queryHandler.sendIntegrationVouchers(from);
+          } else {
+            await this.queryHandler.sendMonthlyVouchers(from, text);
+          }
         } else {
           await this.messagingService.sendMessage(from, `⚠️ Este comando está disponible solo para administradores.`);
         }
