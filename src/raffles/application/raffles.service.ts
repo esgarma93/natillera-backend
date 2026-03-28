@@ -81,13 +81,17 @@ export class RafflesService {
     const partners = await this.partnersService.findAll();
     const activePartners = partners.filter(p => p.activo);
 
-    // Check if they have paid this month
-    const payments = await this.paymentsService.findByMonthAndYear(month, year);
+    // Eligibility: partner must have paid the PREVIOUS month (current month's
+    // payment deadline is the 5th of the next month, so it's not due yet when
+    // the raffle runs on the last Friday of the current month).
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevYear = month === 1 ? year - 1 : year;
+    const payments = await this.paymentsService.findByMonthAndYear(prevMonth, prevYear);
     
     for (const partner of activePartners) {
-      // Check if partner paid this month
+      // Check if partner paid the previous month (verified or pending counts)
       const hasPaid = payments.some(p => 
-        p.partnerId === partner.id && p.status === 'verified'
+        p.partnerId === partner.id && (p.status === 'verified' || p.status === 'pending')
       );
 
       if (!hasPaid) continue;
