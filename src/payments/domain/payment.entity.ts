@@ -6,6 +6,12 @@ export enum PaymentStatus {
 
 export type PaymentType = 'quota' | 'integration';
 
+export interface IVoucherImage {
+  imageUrl?: string;
+  storageKey?: string;
+  type?: string;
+}
+
 export interface IPayment {
   id?: string;
   partnerId: string;
@@ -28,6 +34,8 @@ export interface IPayment {
   type: PaymentType;
   /** Integration ID when type is 'integration' */
   integrationId?: string;
+  /** Array of voucher images when multiple receipts are sent for the same payment */
+  voucherImages: IVoucherImage[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -52,6 +60,7 @@ export class Payment implements IPayment {
   notes?: string;
   type: PaymentType;
   integrationId?: string;
+  voucherImages: IVoucherImage[];
   createdAt: Date;
   updatedAt: Date;
 
@@ -75,6 +84,7 @@ export class Payment implements IPayment {
     this.notes = partial.notes;
     this.type = partial.type || 'quota';
     this.integrationId = partial.integrationId;
+    this.voucherImages = partial.voucherImages || [];
     this.createdAt = partial.createdAt || new Date();
     this.updatedAt = partial.updatedAt || new Date();
   }

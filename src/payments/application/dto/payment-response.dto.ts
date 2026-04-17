@@ -1,4 +1,4 @@
-import { PaymentStatus, PaymentType } from '../../domain/payment.entity';
+import { PaymentStatus, PaymentType, IVoucherImage } from '../../domain/payment.entity';
 
 export class PaymentResponseDto {
   id: string;
@@ -21,6 +21,7 @@ export class PaymentResponseDto {
   notes?: string;
   type: PaymentType;
   integrationId?: string;
+  voucherImages?: IVoucherImage[];
   createdAt: Date;
   updatedAt: Date;
 }

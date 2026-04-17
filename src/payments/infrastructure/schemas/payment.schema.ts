@@ -60,6 +60,9 @@ export class PaymentSchema {
   @Prop()
   integrationId: string;
 
+  @Prop({ type: [{ imageUrl: String, storageKey: String, type: String }], default: [] })
+  voucherImages: Array<{ imageUrl?: string; storageKey?: string; type?: string }>;
+
   @Prop()
   createdAt: Date;
 

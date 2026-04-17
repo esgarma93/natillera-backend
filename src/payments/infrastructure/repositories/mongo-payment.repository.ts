@@ -118,6 +118,7 @@ export class MongoPaymentRepository implements PaymentRepository {
       notes: doc.notes,
       type: (doc.type || 'quota') as 'quota' | 'integration',
       integrationId: doc.integrationId,
+      voucherImages: doc.voucherImages || [],
       createdAt: doc.createdAt,
       updatedAt: doc.updatedAt,
     });

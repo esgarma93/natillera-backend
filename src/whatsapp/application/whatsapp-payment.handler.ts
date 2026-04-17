@@ -432,6 +432,7 @@ export class WhatsAppPaymentHandler {
           if (existingPayment.amount < existingPayment.expectedAmount) {
             await this.paymentsService.accumulatePartialPayment(
               existingPayment.id, detectedAmount,
+              imageUrl, storageKey, parsedVoucher.type,
             );
 
             const newTotal = existingPayment.amount + detectedAmount;

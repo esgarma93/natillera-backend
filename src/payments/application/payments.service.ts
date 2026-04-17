@@ -246,6 +246,9 @@ export class PaymentsService {
       })(),
       type: paymentType,
       integrationId,
+      voucherImages: voucherImageUrl || voucherStorageKey
+        ? [{ imageUrl: voucherImageUrl, storageKey: voucherStorageKey, type: voucherType }]
+        : [],
     });
 
     const created = await this.paymentRepository.create(payment);
@@ -273,6 +276,9 @@ export class PaymentsService {
   async accumulatePartialPayment(
     existingPaymentId: string,
     additionalAmount: number,
+    voucherImageUrl?: string,
+    voucherStorageKey?: string,
+    voucherType?: string,
   ): Promise<PaymentResponseDto> {
     const existing = await this.paymentRepository.findById(existingPaymentId);
     if (!existing) {
@@ -289,12 +295,23 @@ export class PaymentsService {
       ? 'Pago acumulado de múltiples comprobantes — verificar manualmente'
       : existing.pendingDescription;
 
+    // Append new voucher image to the array
+    const voucherImages = [...(existing.voucherImages || [])];
+    if (voucherImageUrl || voucherStorageKey) {
+      voucherImages.push({
+        imageUrl: voucherImageUrl,
+        storageKey: voucherStorageKey,
+        type: voucherType,
+      });
+    }
+
     const updated = await this.paymentRepository.update(existingPaymentId, {
       amount: newAmount,
       difference: newDifference,
       status: PaymentStatus.PENDING,
       pendingDescription,
       notes,
+      voucherImages,
     });
 
     return this.toResponseDto(updated);
@@ -492,8 +509,22 @@ export class PaymentsService {
       notes: payment.notes,
       type: payment.type,
       integrationId: payment.integrationId,
+      voucherImages: await this.resolveVoucherImages(payment.voucherImages),
       createdAt: payment.createdAt,
       updatedAt: payment.updatedAt,
     };
+  }
+
+  /** Resolve presigned URLs for all voucher images in the array */
+  private async resolveVoucherImages(images: Array<{ imageUrl?: string; storageKey?: string; type?: string }> | undefined): Promise<Array<{ imageUrl?: string; storageKey?: string; type?: string }>> {
+    if (!images || images.length === 0) return [];
+    return Promise.all(images.map(async (img) => {
+      const resolved = await this.storageService.getCachedPresignedUrl(
+        img.storageKey || 'img',
+        img.storageKey,
+        img.imageUrl,
+      );
+      return { ...img, imageUrl: resolved ?? img.imageUrl };
+    }));
   }
 }
