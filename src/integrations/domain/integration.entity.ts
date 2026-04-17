@@ -112,7 +112,7 @@ export class Integration implements IIntegration {
   }
 
   computeActivityPot(): number {
-    return this.activityCostPerPerson * this.attendees.length;
+    return this.activityCostPerPerson * (this.attendees.length + this.absentPartnerIds.length);
   }
 
   computeActivityPrize(): number {
@@ -128,8 +128,9 @@ export class Integration implements IIntegration {
 
   /** Total collected from all attendees + absent penalties */
   getTotalCollected(): number {
-    return (this.attendees.length * this.totalCostPerPerson) +
-      (this.absentPartnerIds.length * this.absentPenalty);
+    const allCount = this.attendees.length + this.absentPartnerIds.length;
+    return (allCount * (this.activityCostPerPerson + this.profitabilityPerPerson)) +
+      (this.attendees.length * this.foodCostPerPerson);
   }
 
   /** Amount paid to host for food */
@@ -139,9 +140,7 @@ export class Integration implements IIntegration {
 
   /** Total profitability for the natillera */
   getProfitability(): number {
-    const profitFromAttendees = this.profitabilityPerPerson * this.attendees.length;
-    const profitFromAbsent = (Math.round(this.foodCostPerPerson / 2) + this.profitabilityPerPerson) * this.absentPartnerIds.length;
-    const activityProfit = this.activityPot - this.activityPrize;
-    return profitFromAttendees + profitFromAbsent + activityProfit;
+    const allCount = this.attendees.length + this.absentPartnerIds.length;
+    return this.activityPrize + (allCount * this.profitabilityPerPerson);
   }
 }
