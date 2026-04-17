@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString, IsDateString, Min, Max } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsOptional, IsString, IsDateString, IsIn, Min, Max } from 'class-validator';
 
 export class CreatePaymentDto {
   @IsNotEmpty()
@@ -30,4 +30,12 @@ export class CreatePaymentDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsIn(['quota', 'integration'])
+  type?: string;
+
+  @IsOptional()
+  @IsString()
+  integrationId?: string;
 }

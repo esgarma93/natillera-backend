@@ -86,16 +86,18 @@ export class PaymentsService {
     const difference = amount - expectedAmount;
     const month = createPaymentDto.month || new Date().getMonth() + 1;
 
-    // Check if payment already exists for this partner/period/month
-    const existingPayment = await this.paymentRepository.findByPartnerPeriodAndMonth(
-      createPaymentDto.partnerId,
-      activePeriod.id!,
-      month,
-    );
-    if (existingPayment) {
-      throw new BadRequestException(
-        `Payment for partner ${partner.nombre} already exists for ${PaymentsService.MONTH_NAMES[month - 1]} ${activePeriod.year}`,
+    // Check if payment already exists for this partner/period/month (only for quota payments)
+    if (!createPaymentDto.type || createPaymentDto.type === 'quota') {
+      const existingPayment = await this.paymentRepository.findByPartnerPeriodAndMonth(
+        createPaymentDto.partnerId,
+        activePeriod.id!,
+        month,
       );
+      if (existingPayment) {
+        throw new BadRequestException(
+          `Payment for partner ${partner.nombre} already exists for ${PaymentsService.MONTH_NAMES[month - 1]} ${activePeriod.year}`,
+        );
+      }
     }
 
     const payment = new Payment({
@@ -112,6 +114,8 @@ export class PaymentsService {
       voucherImageUrl: createPaymentDto.voucherImageUrl,
       whatsappMessageId: createPaymentDto.whatsappMessageId,
       notes: createPaymentDto.notes,
+      type: (createPaymentDto.type as any) || 'quota',
+      integrationId: createPaymentDto.integrationId,
     });
 
     const created = await this.paymentRepository.create(payment);
