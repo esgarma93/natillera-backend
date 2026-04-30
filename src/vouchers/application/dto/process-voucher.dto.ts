@@ -38,4 +38,13 @@ export class ProcessVoucherDto {
   @IsOptional()
   @IsString()
   integrationId?: string;
+
+  /**
+   * Manual amount override. Used when OCR fails to detect the amount,
+   * or when the user wants to override the detected amount.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  manualAmount?: number;
 }

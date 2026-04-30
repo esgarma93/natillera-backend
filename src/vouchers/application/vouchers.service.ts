@@ -64,8 +64,8 @@ export class VouchersService {
       };
     }
 
-    // Determine the amount (from parsed voucher or OCR)
-    const detectedAmount = parsedVoucher.amount || ocrResult.amount;
+    // Determine the amount: manual override > parsed voucher > raw OCR
+    const detectedAmount = dto.manualAmount ?? parsedVoucher.amount ?? ocrResult.amount;
 
     if (detectedAmount === null) {
       return {
