@@ -102,28 +102,16 @@ export class VouchersService {
         year,
       );
 
-      // Check for critical validation errors
+      // Critical validation errors (wrong destination account) are downgraded to warnings
+      // because this endpoint is used by admins from the portal. The payment is created
+      // as PENDING for manual review.
       const hasCriticalError = validation.issues.some(issue =>
         issue.includes('cuenta destino') ||
         issue.includes('cuenta de la natillera') ||
         issue.includes('No se pudo detectar la cuenta destino'),
       );
-
       if (hasCriticalError) {
-        return {
-          success: false,
-          voucher: {
-            type: parsedVoucher.type,
-            amount: detectedAmount,
-            date: parsedVoucher.date?.toISOString() || null,
-            destinationAccount: parsedVoucher.recipientAccount,
-            referenceNumber: parsedVoucher.referenceNumber,
-            confidence: parsedVoucher.confidence,
-            rawText: ocrResult.rawText,
-          },
-          validation: { isValid: false, issues: validation.issues },
-          error: 'Destination account validation failed',
-        };
+        this.logger.warn(`Destination account warning (admin portal — proceeding): ${validation.issues.join(', ')}`);
       }
 
       if (dto.notes) {
@@ -210,7 +198,9 @@ export class VouchersService {
     this.logger.log(`Validation result: ${JSON.stringify(validation)}`);
     this.logger.log(`Recipient account detected: ${parsedVoucher.recipientAccount}`);
 
-    // Check for critical validation errors (wrong destination account or account not detected)
+    // Critical validation errors (wrong destination account) are downgraded to warnings
+    // because this endpoint is used by admins from the portal. The payment is created
+    // as PENDING for manual review instead of being rejected.
     const hasCriticalError = validation.issues.some(issue => 
       issue.includes('cuenta destino') || 
       issue.includes('cuenta de la natillera') ||
@@ -218,24 +208,7 @@ export class VouchersService {
     );
 
     if (hasCriticalError) {
-      this.logger.warn(`Critical validation error detected. Rejecting voucher. Issues: ${validation.issues.join(', ')}`);
-      return {
-        success: false,
-        voucher: {
-          type: parsedVoucher.type,
-          amount: detectedAmount,
-          date: parsedVoucher.date?.toISOString() || null,
-          destinationAccount: parsedVoucher.recipientAccount,
-          referenceNumber: parsedVoucher.referenceNumber,
-          confidence: parsedVoucher.confidence,
-          rawText: ocrResult.rawText,
-        },
-        validation: {
-          isValid: false,
-          issues: validation.issues,
-        },
-        error: 'Destination account validation failed',
-      };
+      this.logger.warn(`Destination account warning (admin portal — proceeding): ${validation.issues.join(', ')}`);
     }
 
     // Add notes from validation
