@@ -213,6 +213,26 @@ export class IntegrationsService {
     await this.integrationRepository.update(integrationId, integration);
   }
 
+  /** Add a named guest attendee from a WhatsApp payment */
+  async addGuestAttendeeFromPayment(
+    integrationId: string, guestName: string,
+    invitedByPartnerId: string, paymentId: string,
+  ): Promise<void> {
+    const integration = await this.integrationRepository.findById(integrationId);
+    if (!integration) return;
+    integration.attendees.push({
+      partnerId: invitedByPartnerId,
+      partnerName: guestName,
+      isGuest: true,
+      guestName,
+      invitedByPartnerId,
+      paid: true,
+      paymentId,
+    });
+    integration.recalculate();
+    await this.integrationRepository.update(integrationId, integration);
+  }
+
   /** Add a partner as absent from a WhatsApp payment */
   async addAbsentFromPayment(integrationId: string, partnerId: string): Promise<void> {
     const integration = await this.integrationRepository.findById(integrationId);

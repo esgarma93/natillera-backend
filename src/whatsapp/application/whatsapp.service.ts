@@ -13,6 +13,8 @@ import {
   PendingIntegrationChoice,
   PendingSession,
   AdminPaySession,
+  PendingComboAllocation,
+  PendingGuestName,
   KEY_WA_AUTH,
   KEY_WA_PENDING,
   KEY_WA_SPONSOR,
@@ -20,6 +22,8 @@ import {
   KEY_WA_VOUCHER_MONTH,
   KEY_WA_ADMIN_PAY,
   KEY_WA_INTEGRATION_CHOICE,
+  KEY_WA_COMBO_ALLOC,
+  KEY_WA_GUEST_NAME,
   AUTH_SESSION_TTL,
   PENDING_SESSION_TTL,
 } from './whatsapp.types';
@@ -141,6 +145,30 @@ export class WhatsAppService {
         return;
       }
       await this.paymentHandler.handleIntegrationChoice(from, text, integrationChoice);
+      return;
+    }
+
+    // ── Combo allocation choice ──
+    const comboAlloc = await this.redisService.get<PendingComboAllocation>(KEY_WA_COMBO_ALLOC + from);
+    if (comboAlloc) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_COMBO_ALLOC + from);
+        await this.messagingService.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
+        return;
+      }
+      await this.paymentHandler.handleComboChoice(from, text, comboAlloc);
+      return;
+    }
+
+    // ── Guest name input ──
+    const guestNameSession = await this.redisService.get<PendingGuestName>(KEY_WA_GUEST_NAME + from);
+    if (guestNameSession) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_GUEST_NAME + from);
+        await this.messagingService.sendMessage(from, '✅ Registro cancelado.\n\nEnvía una foto de tu comprobante cuando quieras registrar un pago.');
+        return;
+      }
+      await this.paymentHandler.handleGuestName(from, text, guestNameSession);
       return;
     }
 

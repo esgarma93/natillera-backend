@@ -62,10 +62,10 @@ export class MongoPaymentRepository implements PaymentRepository {
     return payments.map((doc) => this.toEntity(doc));
   }
 
-  async findByPartnerPeriodAndMonth(partnerId: string, periodId: string, month: number): Promise<Payment | null> {
-    const payment = await this.paymentModel
-      .findOne({ partnerId, periodId, month })
-      .exec();
+  async findByPartnerPeriodAndMonth(partnerId: string, periodId: string, month: number, type?: 'quota' | 'integration'): Promise<Payment | null> {
+    const filter: any = { partnerId, periodId, month };
+    if (type) filter.type = type;
+    const payment = await this.paymentModel.findOne(filter).exec();
     return payment ? this.toEntity(payment) : null;
   }
 

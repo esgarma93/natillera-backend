@@ -6,6 +6,8 @@ export const KEY_WA_MONTH_CHOICE = 'wa:month_choice:';
 export const KEY_WA_VOUCHER_MONTH = 'wa:voucher_month:';
 export const KEY_WA_ADMIN_PAY = 'wa:admin_pay:';
 export const KEY_WA_INTEGRATION_CHOICE = 'wa:integration_choice:';
+export const KEY_WA_COMBO_ALLOC = 'wa:combo_alloc:';
+export const KEY_WA_GUEST_NAME = 'wa:guest_name:';
 
 // ─────────────────── TTLs (seconds) ───────────────────
 export const AUTH_SESSION_TTL = 60 * 60;       // 1 hour
@@ -113,3 +115,70 @@ export interface PendingIntegrationChoice {
   integrationTotalCostPerPerson: number;
   integrationAbsentPenalty: number;
 }
+
+/** A single payment allocation within a combo payment */
+export interface ComboAllocationItem {
+  type: 'quota' | 'integration';
+  partnerId: string;
+  partnerName: string;
+  amount: number;
+  /** Only for integration payments */
+  integrationId?: string;
+  integrationName?: string;
+  isAbsent?: boolean;
+  /** true if this allocation is for a guest (not a registered partner) */
+  isGuest?: boolean;
+  guestName?: string;
+  /** Invited by which partner */
+  invitedByPartnerId?: string;
+}
+
+/** A selectable option in the combo allocation menu */
+export interface ComboOption {
+  label: string;
+  cost: number;
+  allocations: ComboAllocationItem[];
+}
+
+/**
+ * Combo allocation session: handles a single voucher that covers multiple payments
+ * (own quota + own integration + sponsored partners + guests).
+ * Replaces PendingIntegrationChoice with a richer multi-step flow.
+ */
+export interface PendingComboAllocation {
+  /** Main partner info */
+  partnerId: string;
+  partnerName: string;
+  partnerMontoCuota: number;
+  /** Original detected amount */
+  detectedAmount: number;
+  /** Amount remaining after allocations so far */
+  remainingAmount: number;
+  parsedVoucher: any;
+  imageUrl: string;
+  imageId: string;
+  messageId: string;
+  storageKey?: string;
+  billingMonth: number;
+  billingYear: number;
+  latePenalty?: number;
+  /** Integration details */
+  integrationId: string;
+  integrationName: string;
+  integrationTotalCostPerPerson: number;
+  integrationAbsentPenalty: number;
+  /** Allocations committed so far */
+  committedAllocations: ComboAllocationItem[];
+  /** Current step in the multi-step flow */
+  step: 'main_choice' | 'sponsored_choice' | 'guest_offer';
+  /** Numbered options presented to the user at the current step */
+  currentOptions: ComboOption[];
+  /** For sponsored_choice: the sponsored partners to show */
+  sponsoredOptions?: Array<{ id: string; nombre: string; numeroRifa: number; montoCuota: number }>;
+}
+
+/** Pending guest name: stored while waiting for the user to type the guest's name */
+export interface PendingGuestName {
+  combo: PendingComboAllocation;
+}
+

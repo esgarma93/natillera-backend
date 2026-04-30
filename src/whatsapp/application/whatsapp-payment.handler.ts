@@ -12,12 +12,18 @@ import {
   PendingSponsorChoice,
   PendingMonthChoice,
   PendingIntegrationChoice,
+  PendingComboAllocation,
+  PendingGuestName,
+  ComboAllocationItem,
+  ComboOption,
   AdminPaySession,
   KEY_WA_PENDING,
   KEY_WA_SPONSOR,
   KEY_WA_MONTH_CHOICE,
   KEY_WA_ADMIN_PAY,
   KEY_WA_INTEGRATION_CHOICE,
+  KEY_WA_COMBO_ALLOC,
+  KEY_WA_GUEST_NAME,
   PENDING_SESSION_TTL,
 } from './whatsapp.types';
 import {
@@ -265,38 +271,15 @@ export class WhatsAppPaymentHandler {
       paymentYear = billing.year;
     }
 
-    // ── Check for active integration: ask user if payment is for quota or integration ──
+    // ── Check for active integration: build combo allocation menu ──
     if (!skipSponsorCheck && detectedAmount !== null) {
       const pendingIntegrations = await this.integrationsService.findPendingForPayment();
       if (pendingIntegrations.length > 0) {
         const integration = pendingIntegrations[0];
-        await this.redisService.set(KEY_WA_INTEGRATION_CHOICE + from, {
-          partnerId: partner.id,
-          partnerName: partner.nombre,
-          partnerMontoCuota: partner.montoCuota,
-          detectedAmount,
-          parsedVoucher,
-          imageUrl: imageUrl,
-          imageId,
-          messageId,
-          storageKey,
-          billingMonth: paymentMonth,
-          billingYear: paymentYear,
-          latePenalty,
-          integrationId: integration.id,
-          integrationName: integration.name,
-          integrationTotalCostPerPerson: integration.totalCostPerPerson,
-          integrationAbsentPenalty: integration.absentPenalty,
-        } as PendingIntegrationChoice, PENDING_SESSION_TTL);
-
-        await this.messagingService.sendMessage(from,
-          `🎉 *Hay una integración activa: ${integration.name}*\n\n` +
-          `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
-          `👤 Socio: *${partner.nombre}*\n\n` +
-          `¿Este pago es para?\n` +
-          `1️⃣ *Cuota mensual* — $${partner.montoCuota.toLocaleString('es-CO')}\n` +
-          `2️⃣ *Integración (${integration.name})* — Asistente: $${integration.totalCostPerPerson.toLocaleString('es-CO')} / Ausente: $${integration.absentPenalty.toLocaleString('es-CO')}\n\n` +
-          `_Responde *1* o *2*. Escribe *CANCELAR* para anular._`,
+        await this.showComboMenu(
+          from, partner, detectedAmount, parsedVoucher, imageUrl, imageId, messageId,
+          storageKey, paymentMonth, paymentYear, latePenalty,
+          integration.id, integration.name, integration.totalCostPerPerson, integration.absentPenalty,
         );
         return;
       }
@@ -422,10 +405,10 @@ export class WhatsAppPaymentHandler {
         }
       }
 
-      // ── Partial payment accumulation ──
+      // ── Partial payment accumulation (quota only) ──
       try {
         const existingPayment = await this.paymentsService.findExistingPayment(
-          partner.id, paymentMonth, paymentYear,
+          partner.id, paymentMonth, paymentYear, 'quota',
         );
 
         if (existingPayment) {
@@ -818,115 +801,489 @@ export class WhatsAppPaymentHandler {
 
   /**
    * Handle the user's response when asked whether payment is for monthly quota or integration.
+   * @deprecated kept for backward compat with stored Redis sessions; new flow uses showComboMenu
    */
   async handleIntegrationChoice(from: string, text: string, choice: PendingIntegrationChoice): Promise<void> {
-    const option = text.trim();
+    // Migrate any existing stored session to the new combo flow
+    await this.redisService.del(KEY_WA_INTEGRATION_CHOICE + from);
+    const partner = await this.partnersService.findById(choice.partnerId);
+    if (!partner) {
+      await this.messagingService.sendMessage(from, '❌ No se encontró el socio. Intenta enviar el comprobante de nuevo.');
+      return;
+    }
+    await this.showComboMenu(
+      from, partner, choice.detectedAmount, choice.parsedVoucher,
+      choice.imageUrl, choice.imageId, choice.messageId,
+      choice.storageKey, choice.billingMonth, choice.billingYear, choice.latePenalty,
+      choice.integrationId, choice.integrationName,
+      choice.integrationTotalCostPerPerson, choice.integrationAbsentPenalty,
+    );
+  }
 
-    if (option === '1') {
-      // Quota payment — proceed with normal flow (skip integration check via skipSponsorCheck=false + month override)
-      await this.redisService.del(KEY_WA_INTEGRATION_CHOICE + from);
-      const partner = await this.partnersService.findById(choice.partnerId);
-      if (!partner) {
-        await this.messagingService.sendMessage(from, '❌ No se encontró el socio. Intenta enviar el comprobante de nuevo.');
-        return;
+  // ─────────────────── COMBO ALLOCATION FLOW ───────────────────
+
+  /**
+   * Build and store a combo allocation menu. Called when an active integration is detected.
+   * Shows all the ways a single voucher can be split across quota, integration, sponsored partners and guests.
+   */
+  private async showComboMenu(
+    from: string,
+    partner: any,
+    detectedAmount: number,
+    parsedVoucher: any,
+    imageUrl: string,
+    imageId: string,
+    messageId: string,
+    storageKey: string | undefined,
+    billingMonth: number,
+    billingYear: number,
+    latePenalty: number | undefined,
+    integrationId: string,
+    integrationName: string,
+    integrationTotalCostPerPerson: number,
+    integrationAbsentPenalty: number,
+  ): Promise<void> {
+    const allPartners = await this.partnersService.findAll();
+    const sponsoredPartners = allPartners.filter(p => p.idPartnerPatrocinador === partner.id && p.activo);
+
+    const options = this.buildComboOptions(
+      detectedAmount, partner, integrationId, integrationName,
+      integrationTotalCostPerPerson, integrationAbsentPenalty,
+      sponsoredPartners,
+    );
+
+    const combo: PendingComboAllocation = {
+      partnerId: partner.id,
+      partnerName: partner.nombre,
+      partnerMontoCuota: partner.montoCuota,
+      detectedAmount,
+      remainingAmount: detectedAmount,
+      parsedVoucher,
+      imageUrl,
+      imageId,
+      messageId,
+      storageKey,
+      billingMonth,
+      billingYear,
+      latePenalty,
+      integrationId,
+      integrationName,
+      integrationTotalCostPerPerson,
+      integrationAbsentPenalty,
+      committedAllocations: [],
+      step: 'main_choice',
+      currentOptions: options,
+      sponsoredOptions: sponsoredPartners.map(p => ({
+        id: p.id, nombre: p.nombre, numeroRifa: p.numeroRifa, montoCuota: p.montoCuota,
+      })),
+    };
+
+    await this.redisService.set(KEY_WA_COMBO_ALLOC + from, combo, PENDING_SESSION_TTL);
+    await this.messagingService.sendMessage(from, this.formatComboMenu(combo, partner.nombre));
+  }
+
+  /**
+   * Build the list of selectable options for a combo menu given the remaining amount and context.
+   */
+  private buildComboOptions(
+    remaining: number,
+    partner: any,
+    integrationId: string,
+    integrationName: string,
+    integrationFull: number,
+    integrationAbsent: number,
+    sponsoredPartners: any[],
+  ): ComboOption[] {
+    const opts: ComboOption[] = [];
+    const quota = partner.montoCuota as number;
+
+    if (quota > 0) {
+      // Option: only own quota
+      if (remaining >= quota) {
+        opts.push({
+          label: `Cuota mensual de *${partner.nombre}* — $${quota.toLocaleString('es-CO')}`,
+          cost: quota,
+          allocations: [{ type: 'quota', partnerId: partner.id, partnerName: partner.nombre, amount: quota }],
+        });
       }
-      // re-enter registerPaymentForPartner but skip the integration check by passing skipSponsorCheck=false
-      // and overrideBillingMonth/Year so it skips billing period logic
-      await this.registerPaymentForPartner(
-        from, partner, choice.detectedAmount, choice.parsedVoucher,
-        choice.imageUrl, choice.imageId, choice.messageId,
-        true, choice.storageKey,
-        choice.billingMonth, choice.billingYear, choice.latePenalty,
-      );
-    } else if (option === '2') {
-      // Integration payment — auto-detect attendee vs absent based on amount
-      await this.redisService.del(KEY_WA_INTEGRATION_CHOICE + from);
 
-      const amount = choice.detectedAmount;
-      const fullCost = choice.integrationTotalCostPerPerson;
-      const absentPenalty = choice.integrationAbsentPenalty;
-
-      // Determine if attendee or absent based on amount
-      const isAbsent = amount === absentPenalty && amount !== fullCost;
-      const expectedAmount = isAbsent ? absentPenalty : fullCost;
-
-      try {
-        const voucherForValidation = (choice.parsedVoucher.amount !== null && choice.parsedVoucher.amount !== amount)
-          ? { ...choice.parsedVoucher, amount }
-          : choice.parsedVoucher;
-
-        const validation = this.voucherParserService.validatePaymentVoucher(
-          voucherForValidation,
-          expectedAmount,
-          choice.billingMonth,
-          choice.billingYear,
-        );
-
-        const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
-          choice.partnerId,
-          amount,
-          choice.imageUrl,
-          choice.messageId,
-          choice.parsedVoucher.type,
-          choice.parsedVoucher.date,
-          validation.issues,
-          choice.storageKey,
-          from,
-          choice.billingMonth,
-          'integration',
-          choice.integrationId,
-        );
-
-        // Auto-classify: add as attendee or absent in the integration
-        if (isAbsent) {
-          await this.integrationsService.addAbsentFromPayment(
-            choice.integrationId, choice.partnerId,
-          );
-        } else {
-          await this.integrationsService.addAttendeeFromPayment(
-            choice.integrationId, choice.partnerId, choice.partnerName, paymentResult.id,
-          );
-        }
-
-        this.logger.log(`Integration payment (${isAbsent ? 'absent' : 'attendee'}) created for ${choice.partnerName}, integration: ${choice.integrationName}`);
-
-        const statusLabel = isAbsent ? 'AUSENTE' : 'ASISTENTE';
-        let responseMessage =
-          `📸 *¡Pago de integración recibido!*\n\n` +
-          `━━━━━━━━━━━━━━━━━━\n` +
-          `👤 Socio: *${choice.partnerName}*\n` +
-          `🎉 Integración: *${choice.integrationName}*\n` +
-          `📋 Estado: *${statusLabel}*\n` +
-          `💰 Monto detectado: *$${amount.toLocaleString('es-CO')}*\n` +
-          `💵 Costo esperado: *$${expectedAmount.toLocaleString('es-CO')}*\n` +
-          `🏦 Tipo: *${choice.parsedVoucher.type.toUpperCase()}*\n` +
-          `━━━━━━━━━━━━━━━━━━\n\n`;
-
-        if (validation.issues.length > 0) {
-          responseMessage +=
-            `⚠️ Estado: *PENDIENTE DE REVISIÓN*\n\n` +
-            `Observaciones:\n${validation.issues.map((i) => `• ${i}`).join('\n')}\n\n` +
-            `El pago será revisado manualmente por un administrador.`;
-        } else {
-          responseMessage +=
-            `✅ *¡Pago de integración registrado exitosamente!*\n` +
-            `Será verificado pronto por el administrador.`;
-        }
-
-        await this.messagingService.sendMessage(from, responseMessage);
-      } catch (paymentError: any) {
-        this.logger.error('Error creating integration payment:', paymentError);
-        await this.messagingService.sendMessage(from,
-          `📸 Comprobante recibido, pero ocurrió un error al registrar el pago de integración.\n` +
-          `Por favor contacta al administrador.`,
-        );
+      // Option: quota + integration (attendee) combo
+      if (remaining >= quota + integrationFull) {
+        opts.push({
+          label: `Cuota + Integración asistente (*${partner.nombre}*) — $${(quota + integrationFull).toLocaleString('es-CO')}`,
+          cost: quota + integrationFull,
+          allocations: [
+            { type: 'quota', partnerId: partner.id, partnerName: partner.nombre, amount: quota },
+            { type: 'integration', partnerId: partner.id, partnerName: partner.nombre, amount: integrationFull, integrationId, integrationName, isAbsent: false },
+          ],
+        });
       }
+
+      // Option: quota + integration (absent)
+      if (remaining >= quota + integrationAbsent && integrationAbsent !== integrationFull) {
+        opts.push({
+          label: `Cuota + Integración ausente (*${partner.nombre}*) — $${(quota + integrationAbsent).toLocaleString('es-CO')}`,
+          cost: quota + integrationAbsent,
+          allocations: [
+            { type: 'quota', partnerId: partner.id, partnerName: partner.nombre, amount: quota },
+            { type: 'integration', partnerId: partner.id, partnerName: partner.nombre, amount: integrationAbsent, integrationId, integrationName, isAbsent: true },
+          ],
+        });
+      }
+
+      // Sponsored: own quota + sponsored quota
+      for (const sp of sponsoredPartners) {
+        if (remaining >= quota + sp.montoCuota) {
+          opts.push({
+            label: `Cuota de *${partner.nombre}* + Cuota de *${sp.nombre}* — $${(quota + sp.montoCuota).toLocaleString('es-CO')}`,
+            cost: quota + sp.montoCuota,
+            allocations: [
+              { type: 'quota', partnerId: partner.id, partnerName: partner.nombre, amount: quota },
+              { type: 'quota', partnerId: sp.id, partnerName: sp.nombre, amount: sp.montoCuota },
+            ],
+          });
+        }
+        // quota + own integration attendee + sponsored quota
+        if (remaining >= quota + integrationFull + sp.montoCuota) {
+          opts.push({
+            label: `Cuota + Integración asistente (*${partner.nombre}*) + Cuota de *${sp.nombre}* — $${(quota + integrationFull + sp.montoCuota).toLocaleString('es-CO')}`,
+            cost: quota + integrationFull + sp.montoCuota,
+            allocations: [
+              { type: 'quota', partnerId: partner.id, partnerName: partner.nombre, amount: quota },
+              { type: 'integration', partnerId: partner.id, partnerName: partner.nombre, amount: integrationFull, integrationId, integrationName, isAbsent: false },
+              { type: 'quota', partnerId: sp.id, partnerName: sp.nombre, amount: sp.montoCuota },
+            ],
+          });
+        }
+        // quota + own integration attendee + sponsored integration attendee
+        if (remaining >= quota + integrationFull + integrationFull) {
+          opts.push({
+            label: `Cuota + Integración asistente (*${partner.nombre}*) + Integración asistente (*${sp.nombre}*) — $${(quota + integrationFull * 2).toLocaleString('es-CO')}`,
+            cost: quota + integrationFull * 2,
+            allocations: [
+              { type: 'quota', partnerId: partner.id, partnerName: partner.nombre, amount: quota },
+              { type: 'integration', partnerId: partner.id, partnerName: partner.nombre, amount: integrationFull, integrationId, integrationName, isAbsent: false },
+              { type: 'integration', partnerId: sp.id, partnerName: sp.nombre, amount: integrationFull, integrationId, integrationName, isAbsent: false },
+            ],
+          });
+        }
+      }
+    }
+
+    // Option: only own integration (attendee)
+    if (remaining >= integrationFull) {
+      opts.push({
+        label: `Integración *${integrationName}* asistente (*${partner.nombre}*) — $${integrationFull.toLocaleString('es-CO')}`,
+        cost: integrationFull,
+        allocations: [{
+          type: 'integration', partnerId: partner.id, partnerName: partner.nombre,
+          amount: integrationFull, integrationId, integrationName, isAbsent: false,
+        }],
+      });
+    }
+
+    // Option: only own integration (absent)
+    if (remaining >= integrationAbsent && integrationAbsent !== integrationFull) {
+      opts.push({
+        label: `Integración *${integrationName}* ausente (*${partner.nombre}*) — $${integrationAbsent.toLocaleString('es-CO')}`,
+        cost: integrationAbsent,
+        allocations: [{
+          type: 'integration', partnerId: partner.id, partnerName: partner.nombre,
+          amount: integrationAbsent, integrationId, integrationName, isAbsent: true,
+        }],
+      });
+    }
+
+    // Sponsored partner options (quota only)
+    for (const sp of sponsoredPartners) {
+      if (remaining >= sp.montoCuota) {
+        opts.push({
+          label: `Cuota de patrocinado *${sp.nombre}* — $${sp.montoCuota.toLocaleString('es-CO')}`,
+          cost: sp.montoCuota,
+          allocations: [{ type: 'quota', partnerId: sp.id, partnerName: sp.nombre, amount: sp.montoCuota }],
+        });
+      }
+      // Sponsored integration attendee
+      if (remaining >= integrationFull) {
+        opts.push({
+          label: `Integración asistente de patrocinado *${sp.nombre}* — $${integrationFull.toLocaleString('es-CO')}`,
+          cost: integrationFull,
+          allocations: [{
+            type: 'integration', partnerId: sp.id, partnerName: sp.nombre,
+            amount: integrationFull, integrationId, integrationName, isAbsent: false,
+          }],
+        });
+      }
+    }
+
+    // Guest option
+    if (remaining >= integrationFull) {
+      opts.push({
+        label: `Entrada de un *invitado* a ${integrationName} — $${integrationFull.toLocaleString('es-CO')} _(se pedirá el nombre)_`,
+        cost: integrationFull,
+        allocations: [{
+          type: 'integration', partnerId: partner.id, partnerName: 'Invitado',
+          amount: integrationFull, integrationId, integrationName, isAbsent: false,
+          isGuest: true, invitedByPartnerId: partner.id,
+        }],
+      });
+    }
+
+    return opts;
+  }
+
+  /** Format combo menu message for WhatsApp */
+  private formatComboMenu(combo: PendingComboAllocation, partnerName: string): string {
+    const { remainingAmount, currentOptions, integrationName, committedAllocations } = combo;
+    let msg = '';
+
+    if (committedAllocations.length > 0) {
+      const allocated = combo.detectedAmount - remainingAmount;
+      msg += `✅ *Ya asignado ($${allocated.toLocaleString('es-CO')}):*\n`;
+      for (const a of committedAllocations) {
+        const label = a.isGuest ? `Invitado *${a.guestName || 'Invitado'}*` : `*${a.partnerName}*`;
+        msg += `• ${a.type === 'quota' ? 'Cuota' : 'Integración'} de ${label}: $${a.amount.toLocaleString('es-CO')}\n`;
+      }
+      msg += `\n💰 *Excedente disponible: $${remainingAmount.toLocaleString('es-CO')}*\n\n`;
+      msg += `*¿Con el excedente quieres pagar?*\n\n`;
     } else {
+      msg += `🎉 *Integración activa: ${integrationName}*\n\n`;
+      msg += `💰 Monto: *$${remainingAmount.toLocaleString('es-CO')}*\n`;
+      msg += `👤 Socio: *${partnerName}*\n\n`;
+      msg += `*¿Qué cubre este comprobante?*\n\n`;
+    }
+
+    if (currentOptions.length === 0) {
+      return msg + `_No hay más pagos que cubrir con este monto._`;
+    }
+
+    for (let i = 0; i < currentOptions.length; i++) {
+      const opt = currentOptions[i];
+      const exact = opt.cost === remainingAmount ? ' ✓' : '';
+      msg += `${i + 1}️⃣ ${opt.label}${exact}\n`;
+    }
+
+    msg += `\n_Responde con el número. Escribe *NADA* si no quieres asignar más. Escribe *CANCELAR* para anular todo._`;
+    return msg;
+  }
+
+  /**
+   * Handle the user's option choice in the combo allocation flow.
+   */
+  async handleComboChoice(from: string, text: string, combo: PendingComboAllocation): Promise<void> {
+    const textLower = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+    // NADA → commit what we have or fall back to full amount as quota for main partner
+    if (textLower === 'nada' || textLower === 'ninguno' || textLower === 'no') {
+      await this.redisService.del(KEY_WA_COMBO_ALLOC + from);
+      if (combo.committedAllocations.length === 0) {
+        // Nothing allocated — fall back: register full amount under main partner as quota
+        const partner = await this.partnersService.findById(combo.partnerId);
+        if (partner) {
+          await this.registerPaymentForPartner(
+            from, partner, combo.detectedAmount, combo.parsedVoucher,
+            combo.imageUrl, combo.imageId, combo.messageId,
+            true, combo.storageKey, combo.billingMonth, combo.billingYear, combo.latePenalty,
+          );
+        }
+      } else {
+        await this.commitComboAllocations(from, combo);
+      }
+      return;
+    }
+
+    const num = parseInt(text.replace(/\D/g, ''), 10);
+    if (isNaN(num) || num < 1 || num > combo.currentOptions.length) {
       await this.messagingService.sendMessage(from,
         `⚠️ No entendí tu respuesta.\n\n` +
-        `Responde *1* para *Cuota mensual*\n` +
-        `o *2* para *Integración (${choice.integrationName})*.\n\n` +
+        `Responde con un número del 1 al ${combo.currentOptions.length},\n` +
+        `*NADA* para no asignar más, o *CANCELAR* para anular.\n`,
+      );
+      return;
+    }
+
+    const chosen = combo.currentOptions[num - 1];
+
+    // If the chosen option includes a guest, we need to ask for the guest name
+    const guestAlloc = chosen.allocations.find(a => a.isGuest);
+    if (guestAlloc) {
+      const nonGuestAllocs = chosen.allocations.filter(a => !a.isGuest);
+      const guestNameSession: PendingGuestName = {
+        combo: {
+          ...combo,
+          committedAllocations: [...combo.committedAllocations, ...nonGuestAllocs, guestAlloc],
+          remainingAmount: combo.remainingAmount - chosen.cost,
+          currentOptions: [],
+        },
+      };
+      await this.redisService.del(KEY_WA_COMBO_ALLOC + from);
+      await this.redisService.set(KEY_WA_GUEST_NAME + from, guestNameSession, PENDING_SESSION_TTL);
+      await this.messagingService.sendMessage(from,
+        `👤 *¿Cómo se llama el invitado?*\n\n` +
+        `Ingresa el nombre completo del invitado que vas a pagar para *${combo.integrationName}*.\n\n` +
         `_Escribe CANCELAR para anular._`,
+      );
+      return;
+    }
+
+    // Commit the chosen allocations
+    const newCommitted = [...combo.committedAllocations, ...chosen.allocations];
+    const newRemaining = combo.remainingAmount - chosen.cost;
+
+    if (newRemaining <= 0) {
+      const finalCombo: PendingComboAllocation = {
+        ...combo, committedAllocations: newCommitted, remainingAmount: 0, currentOptions: [],
+      };
+      await this.redisService.del(KEY_WA_COMBO_ALLOC + from);
+      await this.commitComboAllocations(from, finalCombo);
+      return;
+    }
+
+    // There's remaining — build new options excluding already-allocated combinations
+    const allocatedKeys = new Set(newCommitted.map(a => `${a.partnerId}:${a.type}`));
+    const allPartners = await this.partnersService.findAll();
+    const partner = await this.partnersService.findById(combo.partnerId);
+    if (!partner) {
+      await this.redisService.del(KEY_WA_COMBO_ALLOC + from);
+      await this.messagingService.sendMessage(from, '❌ Error: socio no encontrado.');
+      return;
+    }
+
+    const sponsoredPartners = allPartners
+      .filter(sp => sp.idPartnerPatrocinador === partner.id && sp.activo)
+      .filter(sp => !allocatedKeys.has(`${sp.id}:quota`) && !allocatedKeys.has(`${sp.id}:integration`));
+
+    const partnerForOptions = allocatedKeys.has(`${partner.id}:quota`)
+      ? { ...partner, montoCuota: 0 }
+      : partner;
+
+    const newOptions = this.buildComboOptions(
+      newRemaining, partnerForOptions,
+      combo.integrationId, combo.integrationName,
+      combo.integrationTotalCostPerPerson, combo.integrationAbsentPenalty,
+      sponsoredPartners,
+    ).filter(opt => !opt.allocations.every(a => allocatedKeys.has(`${a.partnerId}:${a.type}`)));
+
+    const updatedCombo: PendingComboAllocation = {
+      ...combo, committedAllocations: newCommitted, remainingAmount: newRemaining,
+      currentOptions: newOptions,
+    };
+
+    if (newOptions.length === 0) {
+      await this.redisService.del(KEY_WA_COMBO_ALLOC + from);
+      await this.commitComboAllocations(from, updatedCombo);
+      return;
+    }
+
+    await this.redisService.set(KEY_WA_COMBO_ALLOC + from, updatedCombo, PENDING_SESSION_TTL);
+    await this.messagingService.sendMessage(from, this.formatComboMenu(updatedCombo, partner.nombre));
+  }
+
+  /**
+   * Handle the user's input for the guest name in the guest payment flow.
+   */
+  async handleGuestName(from: string, text: string, session: PendingGuestName): Promise<void> {
+    const guestName = text.trim();
+    await this.redisService.del(KEY_WA_GUEST_NAME + from);
+
+    const updatedAllocations = session.combo.committedAllocations.map(a =>
+      a.isGuest ? { ...a, guestName } : a,
+    );
+
+    await this.commitComboAllocations(from, { ...session.combo, committedAllocations: updatedAllocations });
+  }
+
+  /**
+   * Execute all committed allocations and send a summary message.
+   */
+  private async commitComboAllocations(from: string, combo: PendingComboAllocation): Promise<void> {
+    const results: string[] = [];
+    let anyError = false;
+
+    for (const alloc of combo.committedAllocations) {
+      try {
+        if (alloc.type === 'quota') {
+          await this.createQuotaPaymentFromCombo(combo, alloc, from);
+          results.push(`✅ Cuota de *${alloc.partnerName}*: $${alloc.amount.toLocaleString('es-CO')}`);
+        } else {
+          await this.createIntegrationPaymentFromCombo(combo, alloc, from);
+          const label = alloc.isGuest
+            ? `Invitado *${alloc.guestName || 'Invitado'}* (asistente a ${alloc.integrationName})`
+            : `*${alloc.partnerName}* (${alloc.isAbsent ? 'ausente' : 'asistente'} a ${alloc.integrationName})`;
+          results.push(`✅ Integración ${label}: $${alloc.amount.toLocaleString('es-CO')}`);
+        }
+      } catch (err: any) {
+        this.logger.error(`Error committing allocation for ${alloc.partnerName}:`, err);
+        const isDup = err?.message?.toLowerCase().includes('already exists');
+        results.push(`⚠️ ${alloc.type === 'quota' ? 'Cuota' : 'Integración'} de *${alloc.partnerName}*: ${isDup ? 'Ya existía un pago' : 'Error al registrar'}`);
+        anyError = true;
+      }
+    }
+
+    const summary =
+      `📸 *Comprobante procesado*\n\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `👤 Socio: *${combo.partnerName}*\n` +
+      `💰 Monto total: *$${combo.detectedAmount.toLocaleString('es-CO')}*\n` +
+      `━━━━━━━━━━━━━━━━━━\n\n` +
+      results.join('\n') +
+      (combo.remainingAmount > 0 ? `\n\n💰 Excedente no asignado: $${combo.remainingAmount.toLocaleString('es-CO')}` : '') +
+      `\n\n${anyError ? '⚠️ Algunos pagos requieren revisión manual.' : '🎉 Serán verificados pronto por el administrador.'}`;
+
+    await this.messagingService.sendMessage(from, summary);
+  }
+
+  /** Create a quota payment for one combo allocation item */
+  private async createQuotaPaymentFromCombo(
+    combo: PendingComboAllocation, alloc: ComboAllocationItem, from: string,
+  ): Promise<void> {
+    const voucherForValidation = { ...combo.parsedVoucher, amount: alloc.amount };
+    const validation = this.voucherParserService.validatePaymentVoucher(
+      voucherForValidation, alloc.amount, combo.billingMonth, combo.billingYear,
+    );
+    if (combo.latePenalty && combo.latePenalty > 0) {
+      const daysLate = Math.round(combo.latePenalty / 2000);
+      validation.issues.push(`Multa por pago tardío: $${combo.latePenalty.toLocaleString('es-CO')} (${daysLate} día${daysLate > 1 ? 's' : ''} de retraso)`);
+    }
+    await this.paymentsService.createFromWhatsAppWithValidation(
+      alloc.partnerId, alloc.amount,
+      combo.imageUrl, combo.messageId, combo.parsedVoucher.type,
+      combo.parsedVoucher.date, validation.issues, combo.storageKey,
+      from, combo.billingMonth,
+    );
+  }
+
+  /** Create an integration payment for one combo allocation item */
+  private async createIntegrationPaymentFromCombo(
+    combo: PendingComboAllocation, alloc: ComboAllocationItem, from: string,
+  ): Promise<void> {
+    const expectedAmount = alloc.isAbsent ? combo.integrationAbsentPenalty : combo.integrationTotalCostPerPerson;
+    const voucherForValidation = { ...combo.parsedVoucher, amount: alloc.amount };
+    const validation = this.voucherParserService.validatePaymentVoucher(
+      voucherForValidation, expectedAmount, combo.billingMonth, combo.billingYear,
+    );
+
+    // Guests are registered under the inviting partner's ID
+    const paymentPartnerId = alloc.isGuest ? combo.partnerId : alloc.partnerId;
+
+    const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
+      paymentPartnerId, alloc.amount,
+      combo.imageUrl, combo.messageId, combo.parsedVoucher.type,
+      combo.parsedVoucher.date, validation.issues, combo.storageKey,
+      from, combo.billingMonth, 'integration', alloc.integrationId,
+    );
+
+    if (alloc.isGuest) {
+      // Add as a named guest attendee via direct integration update
+      await this.integrationsService.addGuestAttendeeFromPayment(
+        alloc.integrationId!, alloc.guestName || 'Invitado',
+        combo.partnerId, paymentResult.id,
+      );
+    } else if (alloc.isAbsent) {
+      await this.integrationsService.addAbsentFromPayment(alloc.integrationId!, alloc.partnerId);
+    } else {
+      await this.integrationsService.addAttendeeFromPayment(
+        alloc.integrationId!, alloc.partnerId, alloc.partnerName, paymentResult.id,
       );
     }
   }

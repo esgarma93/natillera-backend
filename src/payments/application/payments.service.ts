@@ -205,11 +205,12 @@ export class PaymentsService {
     const paymentDate = voucherDate || new Date();
     const month = overrideMonth ?? (paymentDate.getMonth() + 1);
 
-    // Check if payment already exists for this partner/period/month
+    // Check if payment already exists for this partner/period/month+type
     const existingPayment = await this.paymentRepository.findByPartnerPeriodAndMonth(
       partnerId,
       activePeriod.id!,
       month,
+      paymentType,
     );
     if (existingPayment) {
       throw new BadRequestException(
@@ -263,12 +264,13 @@ export class PaymentsService {
    * Find an existing payment for a partner in a given month/year.
    * Returns null if none exists.
    */
-  async findExistingPayment(partnerId: string, month: number, year: number): Promise<PaymentResponseDto | null> {
+  async findExistingPayment(partnerId: string, month: number, year: number, type: 'quota' | 'integration' = 'quota'): Promise<PaymentResponseDto | null> {
     const activePeriod = await this.periodsService.getActivePeriod();
     const existing = await this.paymentRepository.findByPartnerPeriodAndMonth(
       partnerId,
       activePeriod.id!,
       month,
+      type,
     );
     return existing ? this.toResponseDto(existing) : null;
   }
