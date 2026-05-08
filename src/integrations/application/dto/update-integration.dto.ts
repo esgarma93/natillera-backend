@@ -6,6 +6,10 @@ export class AttendeeDto {
   @IsString()
   partnerId: string;
 
+  @IsString()
+  @IsOptional()
+  partnerName?: string;
+
   @IsBoolean()
   @IsOptional()
   isGuest?: boolean;
@@ -17,6 +21,14 @@ export class AttendeeDto {
   @IsString()
   @IsOptional()
   invitedByPartnerId?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  paid?: boolean;
+
+  @IsString()
+  @IsOptional()
+  paymentId?: string;
 }
 
 export class UpdateIntegrationDto {
