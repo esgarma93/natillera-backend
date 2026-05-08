@@ -438,9 +438,14 @@ export class WhatsAppQueryHandler {
         for (const payment of withVoucher) {
           const statusEmoji = payment.status === 'verified' ? '✅' : payment.status === 'pending' ? '⏳' : '❌';
           const voucherUrl = buildVoucherRedirectUrl(payment.id);
+          const dateStr = payment.paymentDate
+            ? new Date(payment.paymentDate).toLocaleDateString('es-CO')
+            : null;
 
           msg += `${statusEmoji} *${payment.partnerName || 'Socio'}* — $${payment.amount.toLocaleString('es-CO')}\n`;
-          msg += `🔗 ${voucherUrl}\n\n`;
+          msg += `🔗 ${voucherUrl}\n`;
+          if (dateStr) msg += `📅 ${dateStr}\n`;
+          msg += `\n`;
         }
       }
 
@@ -521,6 +526,20 @@ export class WhatsAppQueryHandler {
 
         // List attendees with payment status
         if (attendeesCount > 0) {
+          // Pre-fetch payment dates for attendees that paid
+          const paidPaymentIds = (integ.attendees || [])
+            .filter(a => a.paid && a.paymentId)
+            .map(a => a.paymentId!);
+          const paymentDates = new Map<string, string>();
+          await Promise.all(paidPaymentIds.map(async (pid) => {
+            try {
+              const p = await this.paymentsService.findById(pid);
+              if (p?.paymentDate) {
+                paymentDates.set(pid, new Date(p.paymentDate).toLocaleDateString('es-CO'));
+              }
+            } catch { /* ignore missing */ }
+          }));
+
           msg += `\n📎 *Asistentes:*\n`;
           for (const att of integ.attendees) {
             const statusEmoji = att.paid ? '✅' : '⏳';
@@ -529,6 +548,8 @@ export class WhatsAppQueryHandler {
             if (att.paid && att.paymentId) {
               const voucherUrl = buildVoucherRedirectUrl(att.paymentId);
               msg += `\n   🔗 ${voucherUrl}`;
+              const dateStr = paymentDates.get(att.paymentId);
+              if (dateStr) msg += `\n   📅 ${dateStr}`;
             }
             msg += `\n`;
           }
@@ -648,6 +669,20 @@ export class WhatsAppQueryHandler {
       msg += `━━━━━━━━━━━━━━━━━━\n`;
 
       if (attendeesCount > 0) {
+        // Pre-fetch payment dates for attendees that paid
+        const paidPaymentIds = (integ.attendees || [])
+          .filter(a => a.paid && a.paymentId)
+          .map(a => a.paymentId!);
+        const paymentDates = new Map<string, string>();
+        await Promise.all(paidPaymentIds.map(async (pid) => {
+          try {
+            const p = await this.paymentsService.findById(pid);
+            if (p?.paymentDate) {
+              paymentDates.set(pid, new Date(p.paymentDate).toLocaleDateString('es-CO'));
+            }
+          } catch { /* ignore missing */ }
+        }));
+
         msg += `\n📎 *Asistentes:*\n`;
         for (const att of integ.attendees) {
           const statusEmoji = att.paid ? '✅' : '⏳';
@@ -656,6 +691,8 @@ export class WhatsAppQueryHandler {
           if (att.paid && att.paymentId) {
             const voucherUrl = buildVoucherRedirectUrl(att.paymentId);
             msg += `\n   🔗 ${voucherUrl}`;
+            const dateStr = paymentDates.get(att.paymentId);
+            if (dateStr) msg += `\n   📅 ${dateStr}`;
           }
           msg += `\n`;
         }
