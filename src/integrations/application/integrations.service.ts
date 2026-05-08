@@ -110,16 +110,20 @@ export class IntegrationsService {
             guestName: att.guestName,
             invitedByPartnerId: att.invitedByPartnerId,
             invitedByPartnerName: invitedByName,
-            paid: false,
+            activityOnly: att.activityOnly === true,
+            paid: att.paid === true,
+            paymentId: att.paymentId,
           });
         } else {
           try {
             const partner = await this.partnersService.findById(att.partnerId);
+            const existingAtt = existing.attendees.find(a => a.partnerId === partner.id && !a.isGuest);
             resolvedAttendees.push({
               partnerId: partner.id,
               partnerName: partner.nombre,
               isGuest: false,
-              paid: false,
+              paid: att.paid === true || existingAtt?.paid === true,
+              paymentId: att.paymentId || existingAtt?.paymentId,
             });
           } catch { continue; }
         }

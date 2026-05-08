@@ -24,6 +24,10 @@ export class AttendeeDto {
 
   @IsBoolean()
   @IsOptional()
+  activityOnly?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
   paid?: boolean;
 
   @IsString()

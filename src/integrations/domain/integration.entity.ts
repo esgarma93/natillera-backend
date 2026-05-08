@@ -14,6 +14,9 @@ export interface IIntegrationAttendee {
   /** Partner who invited this guest (only when isGuest = true) */
   invitedByPartnerId?: string;
   invitedByPartnerName?: string;
+  /** When true (only valid for guests): the attendee participates only in the activity/game,
+   *  not in the lunch or profitability — i.e. only pays activityCostPerPerson. */
+  activityOnly?: boolean;
   paid: boolean;
   paymentId?: string;
 }
@@ -119,6 +122,11 @@ export class Integration implements IIntegration {
     return Math.round(this.computeActivityPot() / 2);
   }
 
+  /** Number of attendees that pay food + profitability (excludes activity-only guests). */
+  private getFullPayingAttendeesCount(): number {
+    return this.attendees.filter(a => !a.activityOnly).length;
+  }
+
   recalculate(): void {
     this.totalCostPerPerson = this.computeTotalCost();
     this.absentPenalty = this.computeAbsentPenalty();
@@ -128,19 +136,22 @@ export class Integration implements IIntegration {
 
   /** Total collected from all attendees + absent penalties */
   getTotalCollected(): number {
-    const allCount = this.attendees.length + this.absentPartnerIds.length;
-    return (allCount * (this.activityCostPerPerson + this.profitabilityPerPerson)) +
-      (this.attendees.length * this.foodCostPerPerson);
+    const fullAttendees = this.getFullPayingAttendeesCount();
+    const allActivityCount = this.attendees.length + this.absentPartnerIds.length;
+    const fullPayCount = fullAttendees + this.absentPartnerIds.length;
+    return (allActivityCount * this.activityCostPerPerson) +
+      (fullPayCount * this.profitabilityPerPerson) +
+      (fullAttendees * this.foodCostPerPerson);
   }
 
   /** Amount paid to host for food */
   getFoodPayout(): number {
-    return this.foodCostPerPerson * this.attendees.length;
+    return this.foodCostPerPerson * this.getFullPayingAttendeesCount();
   }
 
   /** Total profitability for the natillera */
   getProfitability(): number {
-    const allCount = this.attendees.length + this.absentPartnerIds.length;
-    return this.activityPrize + (allCount * this.profitabilityPerPerson);
+    const fullPayCount = this.getFullPayingAttendeesCount() + this.absentPartnerIds.length;
+    return this.activityPrize + (fullPayCount * this.profitabilityPerPerson);
   }
 }
