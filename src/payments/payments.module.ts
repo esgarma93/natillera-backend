@@ -6,6 +6,7 @@ import { MongoPaymentRepository } from './infrastructure/repositories/mongo-paym
 import { PaymentSchema, PaymentSchemaFactory } from './infrastructure/schemas/payment.schema';
 import { PartnersModule } from '../partners/partners.module';
 import { PeriodsModule } from '../periods/periods.module';
+import { IntegrationsModule } from '../integrations/integrations.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { PeriodsModule } from '../periods/periods.module';
     ]),
     PartnersModule,
     PeriodsModule,
+    IntegrationsModule,
   ],
   controllers: [PaymentsController],
   providers: [

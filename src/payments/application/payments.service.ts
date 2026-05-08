@@ -7,6 +7,7 @@ import { PaymentResponseDto } from './dto/payment-response.dto';
 import { IPartnerRepository, PARTNER_REPOSITORY } from '../../partners/domain/partner.repository';
 import { PeriodsService } from '../../periods/application/periods.service';
 import { StorageService } from '../../storage/storage.service';
+import { IntegrationsService } from '../../integrations/application/integrations.service';
 
 @Injectable()
 export class PaymentsService {
@@ -22,7 +23,32 @@ export class PaymentsService {
     private readonly partnerRepository: IPartnerRepository,
     private readonly periodsService: PeriodsService,
     private readonly storageService: StorageService,
+    private readonly integrationsService: IntegrationsService,
   ) {}
+
+  /**
+   * Compute the expected amount for a payment based on its type.
+   * - quota: partner.montoCuota or active period monthly fee.
+   * - integration: integration.absentPenalty if partner is absent, else integration.totalCostPerPerson.
+   */
+  private async computeExpectedAmount(
+    partnerMontoCuota: number | undefined,
+    monthlyFee: number,
+    type: 'quota' | 'integration' | undefined,
+    integrationId: string | undefined,
+    partnerId: string,
+  ): Promise<number> {
+    if (type === 'integration' && integrationId) {
+      try {
+        const integration = await this.integrationsService.findById(integrationId);
+        const isAbsent = (integration.absentPartnerIds || []).includes(partnerId);
+        return isAbsent ? integration.absentPenalty : integration.totalCostPerPerson;
+      } catch {
+        // Fall back to quota if integration lookup fails
+      }
+    }
+    return partnerMontoCuota || monthlyFee;
+  }
 
   async findAll(): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findAll();
@@ -80,8 +106,14 @@ export class PaymentsService {
       throw new BadRequestException(`Partner with ID ${createPaymentDto.partnerId} not found`);
     }
 
-    // Use partner's montoCuota or period's monthly fee as fallback
-    const expectedAmount = partner.montoCuota || activePeriod.monthlyFee;
+    // Compute expected amount based on payment type (quota vs integration)
+    const expectedAmount = await this.computeExpectedAmount(
+      partner.montoCuota,
+      activePeriod.monthlyFee,
+      createPaymentDto.type as 'quota' | 'integration' | undefined,
+      createPaymentDto.integrationId,
+      createPaymentDto.partnerId,
+    );
     const amount = createPaymentDto.amount;
     const difference = amount - expectedAmount;
     const month = createPaymentDto.month || new Date().getMonth() + 1;
@@ -198,7 +230,13 @@ export class PaymentsService {
       throw new BadRequestException(`Partner with ID ${partnerId} not found`);
     }
 
-    const expectedAmount = partner.montoCuota || activePeriod.monthlyFee;
+    const expectedAmount = await this.computeExpectedAmount(
+      partner.montoCuota,
+      activePeriod.monthlyFee,
+      paymentType,
+      integrationId,
+      partnerId,
+    );
     const difference = amount - expectedAmount;
     
     // Determine month: use override (billing period logic) or fallback to voucher/current date
