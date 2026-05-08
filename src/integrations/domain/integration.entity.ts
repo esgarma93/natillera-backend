@@ -175,11 +175,10 @@ export class Integration implements IIntegration {
   }
 
   /** Total collected from all attendees + absent partners.
-   *  Note: absent partners contribute (activity + profitability) only \u2014 the half-food
-   *  portion of absentPenalty is informational and not summed into the natillera total. */
+   *  Absent partners pay the full absentPenalty (half_food + activity + profitability). */
   getTotalCollected(): number {
     const attendeeTotal = this.attendees.reduce((sum, a) => sum + this.getAttendeeExpectedAmount(a), 0);
-    return attendeeTotal + (this.absentPartnerIds.length * (this.activityCostPerPerson + this.profitabilityPerPerson));
+    return attendeeTotal + (this.absentPartnerIds.length * this.absentPenalty);
   }
 
   /** Amount paid to host for food */
@@ -188,9 +187,9 @@ export class Integration implements IIntegration {
     return this.foodCostPerPerson * foodPayers;
   }
 
-  /** Total profitability for the natillera */
+  /** Total profitability for the natillera = total collected − host food payout − activity prize.
+   *  This captures: per-person profitability fees + half of activity pot + half-food kept from absent partners. */
   getProfitability(): number {
-    const profitabilityPayers = this.attendees.filter(a => Integration.attendeePaysProfitability(a)).length;
-    return this.activityPrize + ((profitabilityPayers + this.absentPartnerIds.length) * this.profitabilityPerPerson);
+    return this.getTotalCollected() - this.getFoodPayout() - this.activityPrize;
   }
 }
