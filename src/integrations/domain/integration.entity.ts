@@ -5,6 +5,18 @@ export enum IntegrationStatus {
   CANCELLED = 'cancelled',
 }
 
+/** What a guest pays for. Partners (non-guests) always pay 'full'. */
+export enum GuestPaymentMode {
+  /** Pays food + activity + profitability (= totalCostPerPerson). Default. */
+  FULL = 'full',
+  /** Pays only the activity/game pot (= activityCostPerPerson). */
+  ACTIVITY_ONLY = 'activity_only',
+  /** Pays only the food/lunch (= foodCostPerPerson). */
+  FOOD_ONLY = 'food_only',
+  /** Pays food + activity, no profitability (= foodCostPerPerson + activityCostPerPerson). */
+  FOOD_AND_ACTIVITY = 'food_and_activity',
+}
+
 export interface IIntegrationAttendee {
   partnerId: string;
   partnerName: string;
@@ -14,8 +26,9 @@ export interface IIntegrationAttendee {
   /** Partner who invited this guest (only when isGuest = true) */
   invitedByPartnerId?: string;
   invitedByPartnerName?: string;
-  /** When true (only valid for guests): the attendee participates only in the activity/game,
-   *  not in the lunch or profitability — i.e. only pays activityCostPerPerson. */
+  /** What this attendee pays for. Only meaningful for guests; partners always pay 'full'. */
+  paymentMode?: GuestPaymentMode;
+  /** @deprecated Use paymentMode instead. Kept for backward compatibility — when true and paymentMode is unset, treated as ACTIVITY_ONLY. */
   activityOnly?: boolean;
   paid: boolean;
   paymentId?: string;
@@ -115,16 +128,43 @@ export class Integration implements IIntegration {
   }
 
   computeActivityPot(): number {
-    return this.activityCostPerPerson * (this.attendees.length + this.absentPartnerIds.length);
+    const activityAttendees = this.attendees.filter(a => Integration.attendeePaysActivity(a)).length;
+    return this.activityCostPerPerson * (activityAttendees + this.absentPartnerIds.length);
   }
 
   computeActivityPrize(): number {
     return Math.round(this.computeActivityPot() / 2);
   }
 
-  /** Number of attendees that pay food + profitability (excludes activity-only guests). */
-  private getFullPayingAttendeesCount(): number {
-    return this.attendees.filter(a => !a.activityOnly).length;
+  /** Resolve effective payment mode for an attendee (handles legacy activityOnly flag). */
+  static getAttendeeMode(att: IIntegrationAttendee): GuestPaymentMode {
+    if (!att.isGuest) return GuestPaymentMode.FULL;
+    if (att.paymentMode) return att.paymentMode;
+    if (att.activityOnly) return GuestPaymentMode.ACTIVITY_ONLY;
+    return GuestPaymentMode.FULL;
+  }
+
+  static attendeePaysFood(att: IIntegrationAttendee): boolean {
+    const mode = Integration.getAttendeeMode(att);
+    return mode === GuestPaymentMode.FULL || mode === GuestPaymentMode.FOOD_ONLY || mode === GuestPaymentMode.FOOD_AND_ACTIVITY;
+  }
+
+  static attendeePaysActivity(att: IIntegrationAttendee): boolean {
+    const mode = Integration.getAttendeeMode(att);
+    return mode === GuestPaymentMode.FULL || mode === GuestPaymentMode.ACTIVITY_ONLY || mode === GuestPaymentMode.FOOD_AND_ACTIVITY;
+  }
+
+  static attendeePaysProfitability(att: IIntegrationAttendee): boolean {
+    return Integration.getAttendeeMode(att) === GuestPaymentMode.FULL;
+  }
+
+  /** Expected amount this attendee owes given the integration's per-person costs. */
+  getAttendeeExpectedAmount(att: IIntegrationAttendee): number {
+    let total = 0;
+    if (Integration.attendeePaysFood(att)) total += this.foodCostPerPerson;
+    if (Integration.attendeePaysActivity(att)) total += this.activityCostPerPerson;
+    if (Integration.attendeePaysProfitability(att)) total += this.profitabilityPerPerson;
+    return total;
   }
 
   recalculate(): void {
@@ -134,24 +174,23 @@ export class Integration implements IIntegration {
     this.activityPrize = this.computeActivityPrize();
   }
 
-  /** Total collected from all attendees + absent penalties */
+  /** Total collected from all attendees + absent partners.
+   *  Note: absent partners contribute (activity + profitability) only \u2014 the half-food
+   *  portion of absentPenalty is informational and not summed into the natillera total. */
   getTotalCollected(): number {
-    const fullAttendees = this.getFullPayingAttendeesCount();
-    const allActivityCount = this.attendees.length + this.absentPartnerIds.length;
-    const fullPayCount = fullAttendees + this.absentPartnerIds.length;
-    return (allActivityCount * this.activityCostPerPerson) +
-      (fullPayCount * this.profitabilityPerPerson) +
-      (fullAttendees * this.foodCostPerPerson);
+    const attendeeTotal = this.attendees.reduce((sum, a) => sum + this.getAttendeeExpectedAmount(a), 0);
+    return attendeeTotal + (this.absentPartnerIds.length * (this.activityCostPerPerson + this.profitabilityPerPerson));
   }
 
   /** Amount paid to host for food */
   getFoodPayout(): number {
-    return this.foodCostPerPerson * this.getFullPayingAttendeesCount();
+    const foodPayers = this.attendees.filter(a => Integration.attendeePaysFood(a)).length;
+    return this.foodCostPerPerson * foodPayers;
   }
 
   /** Total profitability for the natillera */
   getProfitability(): number {
-    const fullPayCount = this.getFullPayingAttendeesCount() + this.absentPartnerIds.length;
-    return this.activityPrize + (fullPayCount * this.profitabilityPerPerson);
+    const profitabilityPayers = this.attendees.filter(a => Integration.attendeePaysProfitability(a)).length;
+    return this.activityPrize + ((profitabilityPayers + this.absentPartnerIds.length) * this.profitabilityPerPerson);
   }
 }

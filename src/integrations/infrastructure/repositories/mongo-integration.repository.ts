@@ -93,7 +93,7 @@ export class MongoIntegrationRepository implements IIntegrationRepository {
       activityWinnerName: doc.activityWinnerName,
       activityPot: doc.activityPot,
       activityPrize: doc.activityPrize,
-      attendees: doc.attendees || [],
+      attendees: (doc.attendees || []) as any,
       absentPartnerIds: doc.absentPartnerIds || [],
       status: doc.status,
       notes: doc.notes,

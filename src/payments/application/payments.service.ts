@@ -73,6 +73,11 @@ export class PaymentsService {
     return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
   }
 
+  async findByIntegrationId(integrationId: string): Promise<PaymentResponseDto[]> {
+    const payments = await this.paymentRepository.findByIntegrationId(integrationId);
+    return Promise.all(payments.map((payment) => this.toResponseDto(payment)));
+  }
+
   async findByPeriodAndMonth(periodId: string, month: number): Promise<PaymentResponseDto[]> {
     const payments = await this.paymentRepository.findByPeriodAndMonth(periodId, month);
     return Promise.all(payments.map((payment) => this.toResponseDto(payment)));

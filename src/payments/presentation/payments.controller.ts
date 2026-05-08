@@ -38,6 +38,11 @@ export class PaymentsController {
     return this.paymentsService.findByPeriodId(periodId);
   }
 
+  @Get('integration/:integrationId')
+  async findByIntegrationId(@Param('integrationId') integrationId: string) {
+    return this.paymentsService.findByIntegrationId(integrationId);
+  }
+
   @Get('period/:periodId/month/:month')
   async findByPeriodAndMonth(
     @Param('periodId') periodId: string,

@@ -69,6 +69,14 @@ export class MongoPaymentRepository implements PaymentRepository {
     return payment ? this.toEntity(payment) : null;
   }
 
+  async findByIntegrationId(integrationId: string): Promise<Payment[]> {
+    const payments = await this.paymentModel
+      .find({ integrationId })
+      .sort({ paymentDate: -1 })
+      .exec();
+    return payments.map((doc) => this.toEntity(doc));
+  }
+
   async findByDateRange(startDate: Date, endDate: Date): Promise<Payment[]> {
     const payments = await this.paymentModel
       .find({

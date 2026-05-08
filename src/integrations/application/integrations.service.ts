@@ -110,6 +110,7 @@ export class IntegrationsService {
             guestName: att.guestName,
             invitedByPartnerId: att.invitedByPartnerId,
             invitedByPartnerName: invitedByName,
+            paymentMode: att.paymentMode,
             activityOnly: att.activityOnly === true,
             paid: att.paid === true,
             paymentId: att.paymentId,

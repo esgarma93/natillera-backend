@@ -58,6 +58,7 @@ export class IntegrationSchema {
     guestName: String, 
     invitedByPartnerId: String, 
     invitedByPartnerName: String, 
+    paymentMode: String,
     activityOnly: Boolean,
     paid: Boolean, 
     paymentId: String,
@@ -69,6 +70,7 @@ export class IntegrationSchema {
     guestName?: string;
     invitedByPartnerId?: string;
     invitedByPartnerName?: string;
+    paymentMode?: string;
     activityOnly?: boolean;
     paid: boolean;
     paymentId?: string;

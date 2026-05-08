@@ -1,6 +1,6 @@
 import { IsString, IsNumber, IsOptional, IsDate, IsArray, IsEnum, Min, ValidateNested, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
-import { IntegrationStatus } from '../../domain/integration.entity';
+import { IntegrationStatus, GuestPaymentMode } from '../../domain/integration.entity';
 
 export class AttendeeDto {
   @IsString()
@@ -21,6 +21,10 @@ export class AttendeeDto {
   @IsString()
   @IsOptional()
   invitedByPartnerId?: string;
+
+  @IsEnum(GuestPaymentMode)
+  @IsOptional()
+  paymentMode?: GuestPaymentMode;
 
   @IsBoolean()
   @IsOptional()

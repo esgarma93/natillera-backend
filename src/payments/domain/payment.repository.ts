@@ -9,6 +9,7 @@ export interface PaymentRepository {
   findByMonthAndYear(month: number, year: number): Promise<Payment[]>;
   findByPartnerAndPeriod(partnerId: string, periodId: string): Promise<Payment[]>;
   findByPartnerPeriodAndMonth(partnerId: string, periodId: string, month: number, type?: 'quota' | 'integration'): Promise<Payment | null>;
+  findByIntegrationId(integrationId: string): Promise<Payment[]>;
   findByDateRange(startDate: Date, endDate: Date): Promise<Payment[]>;
   create(payment: Partial<Payment>): Promise<Payment>;
   update(id: string, payment: Partial<Payment>): Promise<Payment | null>;
