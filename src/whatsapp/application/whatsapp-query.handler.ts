@@ -8,6 +8,7 @@ import { RedisService } from '../../redis/redis.service';
 import { WhatsAppMessagingService } from './whatsapp-messaging.service';
 import {
   KEY_WA_VOUCHER_MONTH,
+  KEY_WA_INTEGRATION_LIST,
   PENDING_SESSION_TTL,
 } from './whatsapp.types';
 import {
@@ -354,7 +355,9 @@ export class WhatsAppQueryHandler {
         return;
       }
 
-      const payments = await this.paymentsService.findByMonthAndYear(month, year);
+      const allPayments = await this.paymentsService.findByMonthAndYear(month, year);
+      // Filter to quota payments only (option 5 handles integration vouchers separately)
+      const payments = allPayments.filter(p => (p.type || 'quota') === 'quota');
       const withVoucher = payments.filter(p => p.voucherImageUrl || p.voucherStorageKey);
 
       // ── Build payment summary ──
@@ -556,6 +559,132 @@ export class WhatsAppQueryHandler {
       this.logger.error('Error sending integration vouchers:', error);
       await this.messagingService.sendMessage(from,
         `❌ Ocurrió un error al consultar los comprobantes de integraciones.\nPor favor intenta de nuevo.`,
+      );
+    }
+  }
+
+  /**
+   * Show a numbered list of integrations (current year) and store the mapping in Redis,
+   * so the next text message picks the integration to query.
+   */
+  async sendIntegrationsList(from: string): Promise<void> {
+    try {
+      const year = new Date().getFullYear();
+      const integrations = await this.integrationsService.findByYear(year);
+
+      if (integrations.length === 0) {
+        await this.messagingService.sendMessage(from,
+          `📋 No hay integraciones registradas para *${year}*.`,
+        );
+        return;
+      }
+
+      const statusLabels: Record<string, string> = {
+        upcoming: '📅 Próxima',
+        active: '✅ Activa',
+        settled: '📦 Liquidada',
+        cancelled: '❌ Cancelada',
+      };
+
+      let msg = `🎉 *Integraciones de ${year}*\n\nElige una para ver sus comprobantes:\n\n`;
+      integrations.forEach((it, i) => {
+        const dateStr = it.date ? new Date(it.date).toLocaleDateString('es-CO') : '';
+        msg += `${i + 1}️⃣ *${it.name}* — ${statusLabels[it.status] || it.status}${dateStr ? ` (${dateStr})` : ''}\n`;
+      });
+      msg += `\n_Responde con el *número* de la integración. Escribe *CANCELAR* para anular._`;
+
+      await this.redisService.set(
+        KEY_WA_INTEGRATION_LIST + from,
+        { ids: integrations.map(it => it.id) },
+        PENDING_SESSION_TTL,
+      );
+      await this.messagingService.sendMessage(from, msg);
+    } catch (error) {
+      this.logger.error('Error listing integrations:', error);
+      await this.messagingService.sendMessage(from,
+        `❌ Ocurrió un error al consultar las integraciones.\nPor favor intenta de nuevo.`,
+      );
+    }
+  }
+
+  /**
+   * Send the voucher summary for a specific integration by its id.
+   */
+  async sendIntegrationVouchersById(from: string, integrationId: string): Promise<void> {
+    try {
+      const integ = await this.integrationsService.findById(integrationId);
+      if (!integ) {
+        await this.messagingService.sendMessage(from, `❌ No se encontró la integración seleccionada.`);
+        return;
+      }
+
+      const attendeesCount = integ.attendees?.length || 0;
+      const absentCount = integ.absentPartnerIds?.length || 0;
+      const paidCount = (integ.attendees || []).filter(a => a.paid).length;
+      const unpaidAttendees = (integ.attendees || []).filter(a => !a.paid);
+
+      const statusLabels: Record<string, string> = {
+        upcoming: '📅 Próxima',
+        active: '✅ Activa',
+        settled: '📦 Liquidada',
+        cancelled: '❌ Cancelada',
+      };
+
+      let msg =
+        `🎉 *${integ.name}*\n` +
+        `${statusLabels[integ.status] || integ.status}\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `👥 Asistentes: *${attendeesCount}* (${paidCount} pagaron)\n` +
+        `🚫 Ausentes: *${absentCount}*\n` +
+        `💰 Costo/persona: *$${integ.totalCostPerPerson.toLocaleString('es-CO')}*\n` +
+        `💸 Multa ausente: *$${integ.absentPenalty.toLocaleString('es-CO')}*\n` +
+        `💵 Recaudado: *$${integ.totalCollected.toLocaleString('es-CO')}*\n` +
+        `📈 Ganancia: *$${integ.profitability.toLocaleString('es-CO')}*\n`;
+
+      if (integ.activityWinnerName) {
+        msg += `🏆 Ganador: *${integ.activityWinnerName}*\n`;
+      }
+
+      msg += `━━━━━━━━━━━━━━━━━━\n`;
+
+      if (attendeesCount > 0) {
+        msg += `\n📎 *Asistentes:*\n`;
+        for (const att of integ.attendees) {
+          const statusEmoji = att.paid ? '✅' : '⏳';
+          msg += `${statusEmoji} ${att.partnerName}`;
+          if (att.isGuest) msg += ` (invitado)`;
+          if (att.paid && att.paymentId) {
+            const voucherUrl = buildVoucherRedirectUrl(att.paymentId);
+            msg += `\n   🔗 ${voucherUrl}`;
+          }
+          msg += `\n`;
+        }
+      }
+
+      if (unpaidAttendees.length > 0) {
+        msg += `\n⚠️ *Sin pagar:* ${unpaidAttendees.map(a => a.partnerName).join(', ')}\n`;
+      }
+
+      // Split long messages
+      if (msg.length > 4096) {
+        const lines = msg.split('\n');
+        let chunk = '';
+        for (const line of lines) {
+          if ((chunk + '\n' + line).length > 4000 && chunk.length > 0) {
+            await this.messagingService.sendMessage(from, chunk);
+            chunk = line;
+          } else {
+            chunk = chunk ? chunk + '\n' + line : line;
+          }
+        }
+        if (chunk) await this.messagingService.sendMessage(from, chunk);
+      } else {
+        await this.messagingService.sendMessage(from, msg);
+      }
+    } catch (error) {
+      this.logger.error('Error sending integration vouchers by id:', error);
+      await this.messagingService.sendMessage(from,
+        `❌ Ocurrió un error al consultar los comprobantes de la integración.\nPor favor intenta de nuevo.`,
       );
     }
   }

@@ -4,6 +4,7 @@ export const KEY_WA_PENDING = 'wa:pending:';
 export const KEY_WA_SPONSOR = 'wa:sponsor:';
 export const KEY_WA_MONTH_CHOICE = 'wa:month_choice:';
 export const KEY_WA_VOUCHER_MONTH = 'wa:voucher_month:';
+export const KEY_WA_INTEGRATION_LIST = 'wa:integration_list:';
 export const KEY_WA_ADMIN_PAY = 'wa:admin_pay:';
 export const KEY_WA_INTEGRATION_CHOICE = 'wa:integration_choice:';
 export const KEY_WA_COMBO_ALLOC = 'wa:combo_alloc:';

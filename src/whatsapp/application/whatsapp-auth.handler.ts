@@ -145,8 +145,9 @@ export class WhatsAppAuthHandler {
       `2️⃣ Ganador de la última rifa\n`;
 
     if (isAdmin) {
-      menuMsg += `3️⃣ Ver todos los comprobantes del mes\n`;
-      menuMsg += `4️⃣ Registrar pago de un socio\n`;
+      menuMsg += `3⃣ Ver comprobantes de *cuotas* del mes\n`;
+      menuMsg += `4⃣ Registrar pago de un socio\n`;
+      menuMsg += `5⃣ Ver comprobantes de una *integración*\n`;
     }
 
     menuMsg += `\n_Responde con el *número* de la opción._`;

@@ -20,6 +20,7 @@ import {
   KEY_WA_SPONSOR,
   KEY_WA_MONTH_CHOICE,
   KEY_WA_VOUCHER_MONTH,
+  KEY_WA_INTEGRATION_LIST,
   KEY_WA_ADMIN_PAY,
   KEY_WA_INTEGRATION_CHOICE,
   KEY_WA_COMBO_ALLOC,
@@ -184,6 +185,26 @@ export class WhatsAppService {
       return;
     }
 
+    // ── Pending integration list selection (admin chose option 5, picking integration) ──
+    const integrationListSession = await this.redisService.get<{ ids: string[] }>(KEY_WA_INTEGRATION_LIST + from);
+    if (integrationListSession) {
+      if (textLower === 'cancelar' || textLower === 'cancel') {
+        await this.redisService.del(KEY_WA_INTEGRATION_LIST + from);
+        await this.messagingService.sendMessage(from, '✅ Consulta cancelada.');
+        return;
+      }
+      const idx = parseInt(text.trim(), 10);
+      if (!isNaN(idx) && idx >= 1 && idx <= integrationListSession.ids.length) {
+        await this.redisService.del(KEY_WA_INTEGRATION_LIST + from);
+        await this.queryHandler.sendIntegrationVouchersById(from, integrationListSession.ids[idx - 1]);
+        return;
+      }
+      await this.messagingService.sendMessage(from,
+        `⚠️ Por favor responde con un número entre 1 y ${integrationListSession.ids.length}.\n\n_Escribe CANCELAR para anular._`,
+      );
+      return;
+    }
+
     // ── Pending voucher month query (admin waiting for month number for COMPROBANTES) ──
     const voucherMonthQuery = await this.redisService.get<{ active: boolean }>(KEY_WA_VOUCHER_MONTH + from);
     if (voucherMonthQuery) {
@@ -287,8 +308,8 @@ export class WhatsAppService {
       return;
     }
 
-    // ── Numbered menu selection (1, 2, 3, 4) when menu is active ──
-    if (authSession?.authenticated && authSession?.menuActive && /^[1-4]$/.test(text.trim())) {
+    // ── Numbered menu selection (1–5) when menu is active ──
+    if (authSession?.authenticated && authSession?.menuActive && /^[1-5]$/.test(text.trim())) {
       await this.redisService.expire(KEY_WA_AUTH + from, AUTH_SESSION_TTL);
       // Clear menuActive flag
       await this.redisService.set(KEY_WA_AUTH + from, {
@@ -310,6 +331,12 @@ export class WhatsAppService {
       } else if (option === 4) {
         if (await this.messagingService.isAdmin(from)) {
           await this.paymentHandler.startAdminPayForPartner(from);
+        } else {
+          await this.messagingService.sendMessage(from, `⚠️ Esta opción está disponible solo para administradores.`);
+        }
+      } else if (option === 5) {
+        if (await this.messagingService.isAdmin(from)) {
+          await this.queryHandler.sendIntegrationsList(from);
         } else {
           await this.messagingService.sendMessage(from, `⚠️ Esta opción está disponible solo para administradores.`);
         }
