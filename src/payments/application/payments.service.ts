@@ -256,6 +256,14 @@ export class PaymentsService {
       );
     }
 
+    // Flag overpayments for manual admin verification (e.g. integration voucher that also
+    // includes the monthly quota, or any amount above the expected).
+    if (difference > 0 && !validationIssues.some(i => i.toLowerCase().includes('mayor'))) {
+      validationIssues.push(
+        `Monto recibido ($${amount.toLocaleString('es-CO')}) es mayor al esperado ($${expectedAmount.toLocaleString('es-CO')}). Excedente: $${difference.toLocaleString('es-CO')} — requiere verificación.`,
+      );
+    }
+
     // Determine status based on validation issues
     const status = validationIssues.length > 0 ? PaymentStatus.PENDING : PaymentStatus.VERIFIED;
     const pendingDescription = validationIssues.length > 0 ? validationIssues.join(' | ') : undefined;

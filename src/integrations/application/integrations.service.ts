@@ -190,17 +190,25 @@ export class IntegrationsService {
     await this.integrationRepository.update(integrationId, { attendees: integration.attendees } as any);
   }
 
-  /** Add a partner as attendee from a WhatsApp payment and mark as paid */
+  /** Add a partner as attendee from a WhatsApp payment and mark as paid.
+   * Respects existing classification: if the partner was already marked as absent,
+   * the absent status is preserved (admin/socio decision is not overwritten by a payment). */
   async addAttendeeFromPayment(integrationId: string, partnerId: string, partnerName: string, paymentId: string): Promise<void> {
     const integration = await this.integrationRepository.findById(integrationId);
     if (!integration) return;
 
-    // Avoid duplicates
-    const existing = integration.attendees.find(a => a.partnerId === partnerId && !a.isGuest);
-    if (existing) {
-      existing.paid = true;
-      existing.paymentId = paymentId;
+    const wasAbsent = integration.absentPartnerIds.includes(partnerId);
+    const existingAttendee = integration.attendees.find(a => a.partnerId === partnerId && !a.isGuest);
+
+    if (existingAttendee) {
+      // Already an attendee — just mark as paid
+      existingAttendee.paid = true;
+      existingAttendee.paymentId = paymentId;
+    } else if (wasAbsent) {
+      // Respect existing absent classification — do NOT promote to attendee. Payment is
+      // tracked independently via the payments collection (Payment.integrationId).
     } else {
+      // No prior classification — add as attendee
       integration.attendees.push({
         partnerId,
         partnerName,
@@ -209,9 +217,6 @@ export class IntegrationsService {
         paymentId,
       });
     }
-
-    // Remove from absents if previously marked
-    integration.absentPartnerIds = integration.absentPartnerIds.filter(id => id !== partnerId);
 
     integration.recalculate();
     await this.integrationRepository.update(integrationId, integration);
@@ -237,18 +242,23 @@ export class IntegrationsService {
     await this.integrationRepository.update(integrationId, integration);
   }
 
-  /** Add a partner as absent from a WhatsApp payment */
+  /** Add a partner as absent from a WhatsApp payment.
+   * Respects existing classification: if the partner was already added as attendee,
+   * the attendee status is preserved (admin/socio decision is not overwritten). */
   async addAbsentFromPayment(integrationId: string, partnerId: string): Promise<void> {
     const integration = await this.integrationRepository.findById(integrationId);
     if (!integration) return;
 
-    // Avoid duplicates
+    const existingAttendee = integration.attendees.find(a => a.partnerId === partnerId && !a.isGuest);
+    if (existingAttendee) {
+      // Respect existing attendee classification — do NOT demote to absent.
+      // Payment is tracked independently via Payment.integrationId.
+      return;
+    }
+
     if (!integration.absentPartnerIds.includes(partnerId)) {
       integration.absentPartnerIds.push(partnerId);
     }
-
-    // Remove from attendees if previously added
-    integration.attendees = integration.attendees.filter(a => a.partnerId !== partnerId || a.isGuest);
 
     integration.recalculate();
     await this.integrationRepository.update(integrationId, integration);

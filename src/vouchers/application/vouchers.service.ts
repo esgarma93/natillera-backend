@@ -149,12 +149,25 @@ export class VouchersService {
         dto.integrationId,
       );
 
-      // Auto-classify attendee vs absent
-      const isAbsent = detectedAmount === integration.absentPenalty && detectedAmount !== integration.totalCostPerPerson;
-      if (isAbsent) {
-        await this.integrationsService.addAbsentFromPayment(dto.integrationId, partner.id);
-      } else {
+      // Respect existing classification: if the partner is already an attendee or absent,
+      // preserve that state. addAttendeeFromPayment / addAbsentFromPayment will no-op when
+      // the partner is already classified (see integrations.service for details).
+      const wasAttendee = (integration.attendees || []).some(a => a.partnerId === partner.id && !a.isGuest);
+      const wasAbsent = (integration.absentPartnerIds || []).includes(partner.id);
+
+      if (wasAttendee) {
+        // Already attendee — just mark as paid
         await this.integrationsService.addAttendeeFromPayment(dto.integrationId, partner.id, partner.nombre, payment.id);
+      } else if (wasAbsent) {
+        // Keep as absent — do not promote; payment remains tracked via Payment.integrationId
+      } else {
+        // No prior classification — auto-classify by detected amount
+        const isAbsent = detectedAmount === integration.absentPenalty && detectedAmount !== integration.totalCostPerPerson;
+        if (isAbsent) {
+          await this.integrationsService.addAbsentFromPayment(dto.integrationId, partner.id);
+        } else {
+          await this.integrationsService.addAttendeeFromPayment(dto.integrationId, partner.id, partner.nombre, payment.id);
+        }
       }
 
       return {
