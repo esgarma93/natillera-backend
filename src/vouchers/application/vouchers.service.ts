@@ -95,9 +95,13 @@ export class VouchersService {
     if (dto.type === 'integration' && dto.integrationId) {
       const integration = await this.integrationsService.findById(dto.integrationId);
 
+      // Expected amount depends on partner classification (attendee vs absent).
+      const isAbsent = (integration.absentPartnerIds || []).includes(partner.id);
+      const expectedAmount = isAbsent ? integration.absentPenalty : integration.totalCostPerPerson;
+
       const validation = this.voucherParserService.validatePaymentVoucher(
         parsedVoucher,
-        integration.totalCostPerPerson,
+        expectedAmount,
         month,
         year,
       );
@@ -112,6 +116,20 @@ export class VouchersService {
       );
       if (hasCriticalError) {
         this.logger.warn(`Destination account warning (admin portal — proceeding): ${validation.issues.join(', ')}`);
+      }
+
+      // Cap the integration payment amount at the expected amount. If the voucher is for a
+      // larger amount (e.g. socio incluyó la cuota mensual en el mismo comprobante), only
+      // the expected portion is recorded as the integration payment; the excess is flagged
+      // for the admin so they can register a separate quota payment manually.
+      const integrationAmount = Math.min(detectedAmount, expectedAmount);
+      const integrationExcess = Math.max(0, detectedAmount - expectedAmount);
+      if (integrationExcess > 0) {
+        validation.issues.push(
+          `Comprobante por $${detectedAmount.toLocaleString('es-CO')} excede el costo de la integración ($${expectedAmount.toLocaleString('es-CO')}). ` +
+          `Se registró $${integrationAmount.toLocaleString('es-CO')} como pago de integración. ` +
+          `Excedente $${integrationExcess.toLocaleString('es-CO')} debe asignarse manualmente (p. ej. a la cuota mensual).`,
+        );
       }
 
       if (dto.notes) {
@@ -136,7 +154,7 @@ export class VouchersService {
 
       const payment = await this.paymentsService.createFromWhatsAppWithValidation(
         partner.id,
-        detectedAmount,
+        integrationAmount,
         r2Url,
         null,
         parsedVoucher.type,
@@ -153,7 +171,7 @@ export class VouchersService {
       // preserve that state. addAttendeeFromPayment / addAbsentFromPayment will no-op when
       // the partner is already classified (see integrations.service for details).
       const wasAttendee = (integration.attendees || []).some(a => a.partnerId === partner.id && !a.isGuest);
-      const wasAbsent = (integration.absentPartnerIds || []).includes(partner.id);
+      const wasAbsent = isAbsent;
 
       if (wasAttendee) {
         // Already attendee — just mark as paid
@@ -161,9 +179,9 @@ export class VouchersService {
       } else if (wasAbsent) {
         // Keep as absent — do not promote; payment remains tracked via Payment.integrationId
       } else {
-        // No prior classification — auto-classify by detected amount
-        const isAbsent = detectedAmount === integration.absentPenalty && detectedAmount !== integration.totalCostPerPerson;
-        if (isAbsent) {
+        // No prior classification — auto-classify by detected amount (compared to integration costs)
+        const looksAbsent = detectedAmount === integration.absentPenalty && detectedAmount !== integration.totalCostPerPerson;
+        if (looksAbsent) {
           await this.integrationsService.addAbsentFromPayment(dto.integrationId, partner.id);
         } else {
           await this.integrationsService.addAttendeeFromPayment(dto.integrationId, partner.id, partner.nombre, payment.id);
@@ -197,6 +215,7 @@ export class VouchersService {
           isValid: validation.issues.length === 0,
           issues: validation.issues,
         },
+        excessAmount: integrationExcess > 0 ? integrationExcess : undefined,
       };
     }
 
