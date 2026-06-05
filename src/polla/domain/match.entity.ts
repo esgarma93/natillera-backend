@@ -122,6 +122,21 @@ export class Match implements IMatch {
     return KNOCKOUT_PHASES.has(this.phase);
   }
 
+  /**
+   * Whether both teams are real, already-decided nations (not placeholders).
+   * Knockout fixtures start with placeholders like "2.º Grupo A", "Ganador P73"
+   * or "3.º Grupo A/B/C/D/F" until earlier rounds finish. Those can't be predicted.
+   */
+  teamsDefined(): boolean {
+    return Match.isTeamDefined(this.homeTeam) && Match.isTeamDefined(this.awayTeam);
+  }
+
+  /** A team name is a placeholder when it references a group position or another match. */
+  static isTeamDefined(team: string): boolean {
+    if (!team || !team.trim()) return false;
+    return !/(grupo|ganador|perdedor|º|\/|\bP\d+\b)/i.test(team);
+  }
+
   /** Moment after which predictions are no longer allowed. */
   getLockTime(): Date {
     return new Date(this.date.getTime() - PREDICTION_LOCK_HOURS * 60 * 60 * 1000);
@@ -129,7 +144,11 @@ export class Match implements IMatch {
 
   /** Whether a prediction can be submitted right now. */
   allowsPrediction(now: Date = new Date()): boolean {
-    return this.status === MatchStatus.OPEN && now < this.getLockTime();
+    return (
+      this.status === MatchStatus.OPEN &&
+      this.teamsDefined() &&
+      now < this.getLockTime()
+    );
   }
 
   /**

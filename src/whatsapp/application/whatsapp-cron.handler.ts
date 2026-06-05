@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PaymentsService } from '../../payments/application/payments.service';
 import { PartnersService } from '../../partners/application/partners.service';
 import { IntegrationsService } from '../../integrations/application/integrations.service';
+import { PollaService } from '../../polla/application/polla.service';
 import { WhatsAppMessagingService } from './whatsapp-messaging.service';
 import { getMonthName, getLastFridayOfMonth, toColombiaDate } from './whatsapp.utils';
 
@@ -17,6 +18,7 @@ export class WhatsAppCronHandler {
     private readonly paymentsService: PaymentsService,
     private readonly partnersService: PartnersService,
     private readonly integrationsService: IntegrationsService,
+    private readonly pollaService: PollaService,
     private readonly messagingService: WhatsAppMessagingService,
   ) {}
 
@@ -141,6 +143,63 @@ export class WhatsAppCronHandler {
       this.logger.log(`Integration reminders sent: ${totalNotified} messages for ${upcomingIn3Days.length} integration(s)`);
     } catch (error) {
       this.logger.error('Error running integration reminder cron:', error);
+    }
+  }
+
+  /**
+   * Cron: every day at 10:00 AM Colombia time, remind active partners who still
+   * have NOT registered a prediction for matches kicking off in ~48h (window
+   * [now+24h, now+48h)). The 24h-wide window run once daily guarantees each
+   * match is notified on exactly one day, avoiding duplicate alerts.
+   */
+  @Cron('0 10 * * *', { timeZone: 'America/Bogota' })
+  async notifyMissingPollaPredictions(): Promise<void> {
+    this.logger.log('Running polla 48h prediction reminder cron...');
+
+    try {
+      const reminders = await this.pollaService.getMissingPredictionReminders(new Date());
+      if (reminders.length === 0) {
+        this.logger.log('No partners missing predictions in the 48h window, skipping.');
+        return;
+      }
+
+      let notified = 0;
+      for (const reminder of reminders) {
+        const whatsappNumber = `57${reminder.celular.replace(/\D/g, '')}`;
+        const matchLines = reminder.matches
+          .map((m) => {
+            const dateStr = new Date(m.date).toLocaleString('es-CO', {
+              weekday: 'long',
+              day: 'numeric',
+              month: 'long',
+              hour: '2-digit',
+              minute: '2-digit',
+              timeZone: 'America/Bogota',
+            });
+            return `⚽ *${m.homeTeam}* vs *${m.awayTeam}*\n   🗓️ ${dateStr}`;
+          })
+          .join('\n');
+
+        try {
+          await this.messagingService.sendMessage(
+            whatsappNumber,
+            `⏰ *Polla Mundial 2026 - ¡Faltan tus predicciones!*\n\n` +
+            `Hola *${reminder.partnerName}* 👋\n\n` +
+            `Soy Nacho 🌿. En menos de *48 horas* se juega(n) ${reminder.matches.length === 1 ? 'este partido' : 'estos partidos'} y aún no registras tu predicción:\n\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `${matchLines}\n` +
+            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `📲 Entra a la app y registra tu marcador antes de que cierre (24h antes del partido). ¡No te quedes sin puntos! 🏆`,
+          );
+          notified++;
+        } catch (err) {
+          this.logger.error(`Failed to send polla reminder to ${reminder.partnerName} (${whatsappNumber}):`, err);
+        }
+      }
+
+      this.logger.log(`Polla prediction reminders sent: ${notified} of ${reminders.length} partners`);
+    } catch (error) {
+      this.logger.error('Error running polla prediction reminder cron:', error);
     }
   }
 }

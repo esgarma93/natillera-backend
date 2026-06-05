@@ -16,6 +16,8 @@ export class MatchResponseDto {
   predictions: IPrediction[];
   /** Computed: whether predictions can still be submitted right now. */
   allowsPrediction: boolean;
+  /** Computed: whether both teams are real nations (not knockout placeholders). */
+  teamsDefined: boolean;
   /** Computed: moment after which predictions lock (24h before kickoff). */
   lockTime: Date;
 }
@@ -52,5 +54,13 @@ export class PollaPrizeSummaryDto {
 export class RankingResponseDto {
   ranking: RankingEntryDto[];
   prizes: PollaPrizeSummaryDto;
+}
+
+/** A partner who is missing predictions for upcoming matches (48h reminder job). */
+export interface PredictionReminder {
+  partnerId: string;
+  partnerName: string;
+  celular: string;
+  matches: { homeTeam: string; awayTeam: string; date: Date }[];
 }
 

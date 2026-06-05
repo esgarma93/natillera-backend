@@ -8,7 +8,7 @@ import { CreatePredictionDto } from './dto/create-prediction.dto';
 import { CreateGuestDto } from './dto/create-guest.dto';
 import { GuestResponseDto } from './dto/guest-response.dto';
 import { SetMatchResultDto } from './dto/set-match-result.dto';
-import { MatchResponseDto, RankingEntryDto, RankingResponseDto } from './dto/match-response.dto';
+import { MatchResponseDto, RankingEntryDto, RankingResponseDto, PredictionReminder } from './dto/match-response.dto';
 import { WORLD_CUP_2026_FIXTURE } from '../infrastructure/data/worldcup-2026-fixture';
 import { computePollaPrizes } from '../domain/polla-prizes';
 import { toColombiaDate } from '../../whatsapp/application/whatsapp.utils';
@@ -77,6 +77,12 @@ export class PollaService implements OnModuleInit {
     const match = await this.matchRepository.findById(matchId);
     if (!match) throw new NotFoundException(`Match ${matchId} not found`);
 
+    if (!match.teamsDefined()) {
+      throw new BadRequestException(
+        'Aún no se conocen los equipos de este partido. Podrás predecir cuando se definan.',
+      );
+    }
+
     if (!match.allowsPrediction(new Date())) {
       throw new BadRequestException(
         'El plazo para registrar tu predicción ya cerró (24 horas antes del partido).',
@@ -143,7 +149,31 @@ export class PollaService implements OnModuleInit {
   /** Aggregate every partner's points across all scored matches, with prizes. */
   async getRanking(): Promise<RankingResponseDto> {
     const matches = await this.matchRepository.findAll();
+    const partners = await this.partnersService.findAll();
+    const guests = await this.guestRepository.findAll();
     const byPartner = new Map<string, RankingEntryDto>();
+
+    // Seed the ranking with every participant so the list is complete even
+    // before anyone registers a prediction.
+    const seedEntry = (id: string, name: string, isGuest: boolean) => {
+      byPartner.set(id, {
+        position: 0,
+        partnerId: id,
+        partnerName: name,
+        isGuest,
+        points: 0,
+        predictions: 0,
+        exactHits: 0,
+        outcomeHits: 0,
+        prize: 0,
+      });
+    };
+    for (const partner of partners) {
+      if (partner.activo) seedEntry(partner.id!, partner.nombre, false);
+    }
+    for (const guest of guests) {
+      if (guest.activo) seedEntry(guest.id!, guest.nombre, true);
+    }
 
     for (const match of matches) {
       const scored = match.status === MatchStatus.FINISHED;
@@ -158,6 +188,7 @@ export class PollaService implements OnModuleInit {
       for (const prediction of match.predictions) {
         let entry = byPartner.get(prediction.partnerId);
         if (!entry) {
+          // Prediction from a partner/guest no longer active: still count it.
           entry = {
             position: 0,
             partnerId: prediction.partnerId,
@@ -190,8 +221,6 @@ export class PollaService implements OnModuleInit {
     );
 
     // Prize pool is based on everyone in the polla: active partners + active guests.
-    const partners = await this.partnersService.findAll();
-    const guests = await this.guestRepository.findAll();
     const participants =
       partners.filter(p => p.activo).length + guests.filter(g => g.activo).length;
     const prizes = computePollaPrizes(participants);
@@ -275,6 +304,46 @@ export class PollaService implements OnModuleInit {
   }
 
   /**
+   * Find active partners (with phone) who still have no prediction for matches
+   * kicking off within the next 24–48h. Used by the WhatsApp 48h reminder job.
+   * Returns one entry per partner with the list of matches they are missing.
+   */
+  async getMissingPredictionReminders(now: Date = new Date()): Promise<PredictionReminder[]> {
+    const from = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const to = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+    const matches = await this.matchRepository.findByDateRange(from, to);
+
+    // Only matches that can still be predicted (real teams, not finished).
+    const upcoming = matches.filter(
+      m => m.teamsDefined() && m.status !== MatchStatus.FINISHED,
+    );
+    if (upcoming.length === 0) return [];
+
+    const partners = await this.partnersService.findAll();
+    const activePartners = partners.filter(p => p.activo && p.celular);
+
+    const reminders: PredictionReminder[] = [];
+    for (const partner of activePartners) {
+      const missing = upcoming.filter(
+        m => !m.predictions.some(pr => pr.partnerId === partner.id && !pr.isGuest),
+      );
+      if (missing.length > 0) {
+        reminders.push({
+          partnerId: partner.id!,
+          partnerName: partner.nombre,
+          celular: partner.celular!,
+          matches: missing.map(m => ({
+            homeTeam: m.homeTeam,
+            awayTeam: m.awayTeam,
+            date: m.date,
+          })),
+        });
+      }
+    }
+    return reminders;
+  }
+
+  /**
    * Consolidate the points for every finished match played on the given day
    * (Colombia time) and persist them, so the ranking is always up to date.
    * Partners with no prediction simply score 0 (they hold no prediction record).
@@ -336,6 +405,7 @@ export class PollaService implements OnModuleInit {
       awayScore: match.awayScore,
       predictions: match.predictions,
       allowsPrediction: match.allowsPrediction(new Date()),
+      teamsDefined: match.teamsDefined(),
       lockTime: match.getLockTime(),
     };
   }

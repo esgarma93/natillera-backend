@@ -13,9 +13,10 @@ import { PartnersModule } from '../partners/partners.module';
 import { UsersModule } from '../users/users.module';
 import { RafflesModule } from '../raffles/raffles.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
+import { PollaModule } from '../polla/polla.module';
 
 @Module({
-  imports: [PaymentsModule, PartnersModule, UsersModule, IntegrationsModule, forwardRef(() => RafflesModule)],
+  imports: [PaymentsModule, PartnersModule, UsersModule, IntegrationsModule, PollaModule, forwardRef(() => RafflesModule)],
   controllers: [WhatsAppController],
   providers: [
     WhatsAppService,
