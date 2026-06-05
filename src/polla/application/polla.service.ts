@@ -1,8 +1,12 @@
 import { Injectable, Inject, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { Match, MatchStatus, POINTS } from '../domain/match.entity';
 import { IMatchRepository, MATCH_REPOSITORY } from '../domain/match.repository';
+import { IPollaGuestRepository, POLLA_GUEST_REPOSITORY } from '../domain/polla-guest.repository';
+import { PollaGuest } from '../domain/polla-guest.entity';
 import { PartnersService } from '../../partners/application/partners.service';
 import { CreatePredictionDto } from './dto/create-prediction.dto';
+import { CreateGuestDto } from './dto/create-guest.dto';
+import { GuestResponseDto } from './dto/guest-response.dto';
 import { SetMatchResultDto } from './dto/set-match-result.dto';
 import { MatchResponseDto, RankingEntryDto, RankingResponseDto } from './dto/match-response.dto';
 import { WORLD_CUP_2026_FIXTURE } from '../infrastructure/data/worldcup-2026-fixture';
@@ -16,6 +20,8 @@ export class PollaService implements OnModuleInit {
   constructor(
     @Inject(MATCH_REPOSITORY)
     private readonly matchRepository: IMatchRepository,
+    @Inject(POLLA_GUEST_REPOSITORY)
+    private readonly guestRepository: IPollaGuestRepository,
     private readonly partnersService: PartnersService,
   ) {}
 
@@ -66,7 +72,7 @@ export class PollaService implements OnModuleInit {
     return this.toResponseDto(match);
   }
 
-  /** Submit or update a partner's prediction for a match (locks 24h before kickoff). */
+  /** Submit or update a prediction for a match (partner or guest), locks 24h before kickoff. */
   async submitPrediction(matchId: string, dto: CreatePredictionDto): Promise<MatchResponseDto> {
     const match = await this.matchRepository.findById(matchId);
     if (!match) throw new NotFoundException(`Match ${matchId} not found`);
@@ -77,7 +83,17 @@ export class PollaService implements OnModuleInit {
       );
     }
 
-    const partner = await this.partnersService.findById(dto.partnerId);
+    let participantName: string;
+    let invitedByPartnerId: string | undefined;
+    if (dto.isGuest) {
+      const guest = await this.guestRepository.findById(dto.partnerId);
+      if (!guest) throw new NotFoundException(`Guest ${dto.partnerId} not found`);
+      participantName = guest.nombre;
+      invitedByPartnerId = guest.invitedByPartnerId;
+    } else {
+      const partner = await this.partnersService.findById(dto.partnerId);
+      participantName = partner.nombre;
+    }
 
     const now = new Date();
     const existing = match.predictions.find(p => p.partnerId === dto.partnerId);
@@ -88,7 +104,9 @@ export class PollaService implements OnModuleInit {
     } else {
       match.predictions.push({
         partnerId: dto.partnerId,
-        partnerName: partner.nombre,
+        partnerName: participantName,
+        isGuest: dto.isGuest || false,
+        invitedByPartnerId,
         homeScore: dto.homeScore,
         awayScore: dto.awayScore,
         points: 0,
@@ -144,6 +162,7 @@ export class PollaService implements OnModuleInit {
             position: 0,
             partnerId: prediction.partnerId,
             partnerName: prediction.partnerName,
+            isGuest: prediction.isGuest || false,
             points: 0,
             predictions: 0,
             exactHits: 0,
@@ -170,9 +189,11 @@ export class PollaService implements OnModuleInit {
         a.partnerName.localeCompare(b.partnerName),
     );
 
-    // Prize pool is based on the number of active partners (everyone in the polla).
+    // Prize pool is based on everyone in the polla: active partners + active guests.
     const partners = await this.partnersService.findAll();
-    const participants = partners.filter(p => p.activo).length;
+    const guests = await this.guestRepository.findAll();
+    const participants =
+      partners.filter(p => p.activo).length + guests.filter(g => g.activo).length;
     const prizes = computePollaPrizes(participants);
 
     ranking.forEach((entry, index) => {
@@ -183,6 +204,55 @@ export class PollaService implements OnModuleInit {
     });
 
     return { ranking, prizes };
+  }
+
+  // ---- Guests (invitados) ----
+
+  /** List every guest invited to the polla. */
+  async findAllGuests(): Promise<GuestResponseDto[]> {
+    const guests = await this.guestRepository.findAll();
+    return guests.map(g => this.toGuestDto(g));
+  }
+
+  /** Invite a guest to the polla (invited by a partner). */
+  async createGuest(dto: CreateGuestDto): Promise<GuestResponseDto> {
+    const partner = await this.partnersService.findById(dto.invitedByPartnerId);
+    const guest = await this.guestRepository.create(
+      new PollaGuest({
+        nombre: dto.nombre.trim(),
+        invitedByPartnerId: dto.invitedByPartnerId,
+        invitedByName: partner.nombre,
+        activo: true,
+      }),
+    );
+    return this.toGuestDto(guest);
+  }
+
+  /** Remove a guest and delete all of their predictions. */
+  async deleteGuest(guestId: string): Promise<void> {
+    const guest = await this.guestRepository.findById(guestId);
+    if (!guest) throw new NotFoundException(`Guest ${guestId} not found`);
+
+    const matches = await this.matchRepository.findAll();
+    for (const match of matches) {
+      const before = match.predictions.length;
+      const filtered = match.predictions.filter(p => p.partnerId !== guestId);
+      if (filtered.length !== before) {
+        await this.matchRepository.update(match.id!, { predictions: filtered });
+      }
+    }
+
+    await this.guestRepository.delete(guestId);
+  }
+
+  private toGuestDto(guest: PollaGuest): GuestResponseDto {
+    return {
+      id: guest.id!,
+      nombre: guest.nombre,
+      invitedByPartnerId: guest.invitedByPartnerId,
+      invitedByName: guest.invitedByName,
+      activo: guest.activo,
+    };
   }
 
   /**

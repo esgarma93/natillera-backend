@@ -43,6 +43,8 @@ export class MatchSchema {
     type: [{
       partnerId: String,
       partnerName: String,
+      isGuest: Boolean,
+      invitedByPartnerId: String,
       homeScore: Number,
       awayScore: Number,
       points: Number,
@@ -54,6 +56,8 @@ export class MatchSchema {
   predictions: Array<{
     partnerId: string;
     partnerName: string;
+    isGuest?: boolean;
+    invitedByPartnerId?: string;
     homeScore: number;
     awayScore: number;
     points: number;

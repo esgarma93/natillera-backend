@@ -20,6 +20,10 @@ export enum MatchStatus {
 export interface IPrediction {
   partnerId: string;
   partnerName: string;
+  /** True when this prediction belongs to an invited guest (not a partner). */
+  isGuest?: boolean;
+  /** Partner who invited the guest (only when isGuest). */
+  invitedByPartnerId?: string;
   homeScore: number;
   awayScore: number;
   /** Points earned once the match result is known (0 until scored). */

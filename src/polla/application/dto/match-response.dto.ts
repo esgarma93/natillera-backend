@@ -25,6 +25,8 @@ export class RankingEntryDto {
   position: number;
   partnerId: string;
   partnerName: string;
+  /** True when this ranking entry belongs to an invited guest. */
+  isGuest?: boolean;
   /** Total points across all scored matches. */
   points: number;
   /** Number of predictions submitted. */
