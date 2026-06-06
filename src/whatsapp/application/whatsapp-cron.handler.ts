@@ -24,16 +24,22 @@ export class WhatsAppCronHandler {
 
   /**
    * Cron: notify unpaid active partners on day 5 of each month at 9:00 AM.
-   * Only notifies partners who have NOT paid for the current month.
+   * Day 5 is the deadline for the PREVIOUS month's quota (e.g. on June 5 the
+   * payment due is for May), so the reminder targets the previous month.
+   * Only notifies partners who have NOT paid for that month.
    */
   @Cron('0 9 5 * *')
   async notifyUnpaidPartners(): Promise<void> {
     const now = toColombiaDate(new Date());
-    const month = now.getMonth() + 1;
-    const year = now.getFullYear();
+    const calendarMonth = now.getMonth() + 1;
+    const calendarYear = now.getFullYear();
+    // Day 5 is the deadline for the previous month's quota.
+    const month = calendarMonth === 1 ? 12 : calendarMonth - 1;
+    const year = calendarMonth === 1 ? calendarYear - 1 : calendarYear;
     const monthName = getMonthName(month);
-    const nextRaffleDate = getLastFridayOfMonth(month, year);
-    const nextRaffleDateStr = `${nextRaffleDate.getDate()} de ${monthName} de ${year}`;
+    // The raffle a partner qualifies for by paying is this calendar month's one.
+    const nextRaffleDate = getLastFridayOfMonth(calendarMonth, calendarYear);
+    const nextRaffleDateStr = `${nextRaffleDate.getDate()} de ${getMonthName(calendarMonth)} de ${calendarYear}`;
 
     this.logger.log(`Running payment reminder cron for ${monthName} ${year}`);
 
