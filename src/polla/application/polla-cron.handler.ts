@@ -4,8 +4,8 @@ import { PollaService } from './polla.service';
 
 /**
  * Scheduled jobs for the Polla:
- *  - Lock matches once they are within 1h of kickoff (no more predictions).
- *  - Consolidate the day's results every night so the ranking stays up to date.
+ *  - Lock matches once they are within 15min of kickoff (no more predictions).
+ *  - Consolidate the day's results every 30 min (4 PM–midnight) so the ranking stays up to date.
  */
 @Injectable()
 export class PollaCronHandler {
@@ -24,10 +24,12 @@ export class PollaCronHandler {
   }
 
   /**
-   * Runs nightly at 23:30 Colombia time to consolidate and persist the points
-   * of every finished match played during the day.
+   * During the World Cup, matches finish in the evening (Colombia time). This
+   * runs every 30 minutes from 4:00 PM to 11:30 PM Colombia time so the ranking
+   * stays up to date shortly after each match ends. The consolidation is
+   * idempotent (it only recalculates points of already-finished matches).
    */
-  @Cron('30 23 * * *', { timeZone: 'America/Bogota' })
+  @Cron('*/30 16-23 * * *', { timeZone: 'America/Bogota' })
   async consolidateDailyResults(): Promise<void> {
     try {
       await this.pollaService.consolidateDailyResults(new Date());
