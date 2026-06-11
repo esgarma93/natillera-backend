@@ -9,9 +9,9 @@ export enum MatchPhase {
 }
 
 export enum MatchStatus {
-  /** Predictions are allowed (more than 24h before kickoff). */
+  /** Predictions are allowed (more than 1h before kickoff). */
   OPEN = 'open',
-  /** Locked: less than 24h before kickoff. No more predictions. */
+  /** Locked: less than 1h before kickoff. No more predictions. */
   CLOSED = 'closed',
   /** Match finished and final result registered. */
   FINISHED = 'finished',
@@ -70,7 +70,7 @@ export const POINTS = {
 };
 
 /** Hours before kickoff after which predictions are locked. */
-export const PREDICTION_LOCK_HOURS = 24;
+export const PREDICTION_LOCK_HOURS = 1;
 
 /** Phases that count as knockout (eliminación directa) for double points. */
 const KNOCKOUT_PHASES = new Set<MatchPhase>([
