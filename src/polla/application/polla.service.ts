@@ -4,6 +4,7 @@ import { IMatchRepository, MATCH_REPOSITORY } from '../domain/match.repository';
 import { IPollaGuestRepository, POLLA_GUEST_REPOSITORY } from '../domain/polla-guest.repository';
 import { PollaGuest } from '../domain/polla-guest.entity';
 import { PartnersService } from '../../partners/application/partners.service';
+import { UsersService } from '../../users/application/users.service';
 import { CreatePredictionDto } from './dto/create-prediction.dto';
 import { CreateGuestDto } from './dto/create-guest.dto';
 import { GuestResponseDto } from './dto/guest-response.dto';
@@ -23,6 +24,7 @@ export class PollaService implements OnModuleInit {
     @Inject(POLLA_GUEST_REPOSITORY)
     private readonly guestRepository: IPollaGuestRepository,
     private readonly partnersService: PartnersService,
+    private readonly usersService: UsersService,
   ) {}
 
   /** Seed the World Cup fixture the first time the module boots. */

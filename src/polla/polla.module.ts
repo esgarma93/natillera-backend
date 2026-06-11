@@ -10,6 +10,7 @@ import { MongoPollaGuestRepository } from './infrastructure/repositories/mongo-p
 import { MATCH_REPOSITORY } from './domain/match.repository';
 import { POLLA_GUEST_REPOSITORY } from './domain/polla-guest.repository';
 import { PartnersModule } from '../partners/partners.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { PartnersModule } from '../partners/partners.module';
       { name: PollaGuestSchema.name, schema: PollaGuestSchemaFactory },
     ]),
     PartnersModule,
+    UsersModule,
   ],
   controllers: [PollaController],
   providers: [
