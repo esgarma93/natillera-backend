@@ -1,4 +1,4 @@
-import { IsString, IsEnum, IsNotEmpty, Matches, Length } from 'class-validator';
+import { IsString, IsEnum, IsNotEmpty, IsOptional, IsBoolean, Matches, Length } from 'class-validator';
 import { UserRole } from '../../domain/user.entity';
 
 export class CreateUserDto {
@@ -18,4 +18,8 @@ export class CreateUserDto {
   @IsString()
   @IsNotEmpty()
   partnerId: string;
+
+  @IsOptional()
+  @IsBoolean()
+  activo?: boolean;
 }

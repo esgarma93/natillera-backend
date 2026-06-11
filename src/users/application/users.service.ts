@@ -86,6 +86,7 @@ export class UsersService {
       password: hashedPassword,
       role: dto.role,
       partnerId: dto.partnerId,
+      activo: dto.activo ?? true,
     });
 
     const created = await this.userRepository.create(user);

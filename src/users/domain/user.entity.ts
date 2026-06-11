@@ -40,7 +40,7 @@ export class User implements IUser {
       ...data,
       fechaCreacion: new Date(),
       fechaActualizacion: new Date(),
-      activo: true,
+      activo: data.activo ?? true,
     });
   }
 
