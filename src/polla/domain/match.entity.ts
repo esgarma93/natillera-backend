@@ -9,9 +9,9 @@ export enum MatchPhase {
 }
 
 export enum MatchStatus {
-  /** Predictions are allowed (more than 1h before kickoff). */
+  /** Predictions are allowed (more than 15min before kickoff). */
   OPEN = 'open',
-  /** Locked: less than 1h before kickoff. No more predictions. */
+  /** Locked: less than 15min before kickoff. No more predictions. */
   CLOSED = 'closed',
   /** Match finished and final result registered. */
   FINISHED = 'finished',
@@ -69,8 +69,8 @@ export const POINTS = {
   GOAL_DIFFERENCE: { group: 1, knockout: 2 },
 };
 
-/** Hours before kickoff after which predictions are locked. */
-export const PREDICTION_LOCK_HOURS = 1;
+/** Minutes before kickoff after which predictions are locked. */
+export const PREDICTION_LOCK_MINUTES = 15;
 
 /** Phases that count as knockout (eliminación directa) for double points. */
 const KNOCKOUT_PHASES = new Set<MatchPhase>([
@@ -139,7 +139,7 @@ export class Match implements IMatch {
 
   /** Moment after which predictions are no longer allowed. */
   getLockTime(): Date {
-    return new Date(this.date.getTime() - PREDICTION_LOCK_HOURS * 60 * 60 * 1000);
+    return new Date(this.date.getTime() - PREDICTION_LOCK_MINUTES * 60 * 1000);
   }
 
   /** Whether a prediction can be submitted right now. */

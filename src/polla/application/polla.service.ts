@@ -1,5 +1,5 @@
 import { Injectable, Inject, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
-import { Match, MatchStatus, POINTS, PREDICTION_LOCK_HOURS } from '../domain/match.entity';
+import { Match, MatchStatus, POINTS, PREDICTION_LOCK_MINUTES } from '../domain/match.entity';
 import { IMatchRepository, MATCH_REPOSITORY } from '../domain/match.repository';
 import { IPollaGuestRepository, POLLA_GUEST_REPOSITORY } from '../domain/polla-guest.repository';
 import { PollaGuest } from '../domain/polla-guest.entity';
@@ -87,7 +87,7 @@ export class PollaService implements OnModuleInit {
 
     if (!match.allowsPrediction(new Date())) {
       throw new BadRequestException(
-        'El plazo para registrar tu predicción ya cerró (1 hora antes del partido).',
+        'El plazo para registrar tu predicción ya cerró (15 minutos antes del partido).',
       );
     }
 
@@ -287,7 +287,7 @@ export class PollaService implements OnModuleInit {
   }
 
   /**
-   * Lock matches whose kickoff is within the next hour (PREDICTION_LOCK_HOURS).
+   * Lock matches whose kickoff is within the next PREDICTION_LOCK_MINUTES.
    * Returns how many were locked. Called by the scheduled job.
    */
   async lockExpiredMatches(now: Date = new Date()): Promise<number> {
@@ -398,7 +398,7 @@ export class PollaService implements OnModuleInit {
   }
 
   private computeStatus(date: Date, now: Date): MatchStatus {
-    const lockTime = new Date(date.getTime() - PREDICTION_LOCK_HOURS * 60 * 60 * 1000);
+    const lockTime = new Date(date.getTime() - PREDICTION_LOCK_MINUTES * 60 * 1000);
     return now >= lockTime ? MatchStatus.CLOSED : MatchStatus.OPEN;
   }
 
