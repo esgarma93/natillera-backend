@@ -322,7 +322,18 @@ export class PollaService implements OnModuleInit {
     if (upcoming.length === 0) return [];
 
     const partners = await this.partnersService.findAll();
-    const activePartners = partners.filter(p => p.activo && p.celular);
+
+    // Resolve a phone for each partner: prefer the partner record, fall back to
+    // the linked user account's phone (some partners have no celular set there).
+    const users = await this.usersService.findAll();
+    const userPhoneByPartner = new Map<string, string>();
+    for (const u of users) {
+      if (u.partnerId && u.celular) userPhoneByPartner.set(u.partnerId, u.celular);
+    }
+    const resolvePhone = (partner: { id?: string; celular?: string }): string | undefined =>
+      partner.celular || (partner.id ? userPhoneByPartner.get(partner.id) : undefined);
+
+    const activePartners = partners.filter(p => p.activo && resolvePhone(p));
 
     const reminders: PredictionReminder[] = [];
     for (const partner of activePartners) {
@@ -333,7 +344,7 @@ export class PollaService implements OnModuleInit {
         reminders.push({
           partnerId: partner.id!,
           partnerName: partner.nombre,
-          celular: partner.celular!,
+          celular: resolvePhone(partner)!,
           matches: missing.map(m => ({
             homeTeam: m.homeTeam,
             awayTeam: m.awayTeam,
