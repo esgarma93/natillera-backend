@@ -195,7 +195,7 @@ export class WhatsAppCronHandler {
             `━━━━━━━━━━━━━━━━━━\n` +
             `${matchLines}\n` +
             `━━━━━━━━━━━━━━━━━━\n\n` +
-            `📲 Entra a la app y registra tu marcador antes de que cierre (24h antes del partido). ¡No te quedes sin puntos! 🏆`,
+            `📲 Entra a la app y registra tu marcador antes de que cierre (1 hora antes del partido). ¡No te quedes sin puntos! 🏆`,
           );
           notified++;
         } catch (err) {

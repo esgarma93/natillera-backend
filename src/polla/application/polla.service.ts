@@ -285,8 +285,8 @@ export class PollaService implements OnModuleInit {
   }
 
   /**
-   * Lock matches whose kickoff is within the next 24h. Returns how many were locked.
-   * Called by the scheduled job.
+   * Lock matches whose kickoff is within the next hour (PREDICTION_LOCK_HOURS).
+   * Returns how many were locked. Called by the scheduled job.
    */
   async lockExpiredMatches(now: Date = new Date()): Promise<number> {
     const matches = await this.matchRepository.findAll();
@@ -298,7 +298,7 @@ export class PollaService implements OnModuleInit {
       }
     }
     if (locked > 0) {
-      this.logger.log(`Locked ${locked} match(es) past their 24h deadline.`);
+      this.logger.log(`Locked ${locked} match(es) past their prediction deadline.`);
     }
     return locked;
   }

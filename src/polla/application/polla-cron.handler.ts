@@ -4,7 +4,7 @@ import { PollaService } from './polla.service';
 
 /**
  * Scheduled jobs for the Polla:
- *  - Lock matches once they are within 24h of kickoff (no more predictions).
+ *  - Lock matches once they are within 1h of kickoff (no more predictions).
  *  - Consolidate the day's results every night so the ranking stays up to date.
  */
 @Injectable()
@@ -13,7 +13,7 @@ export class PollaCronHandler {
 
   constructor(private readonly pollaService: PollaService) {}
 
-  /** Runs every 10 minutes to keep the 24h prediction window accurate. */
+  /** Runs every 10 minutes to keep the prediction lock window accurate. */
   @Cron(CronExpression.EVERY_10_MINUTES)
   async lockMatchesPastDeadline(): Promise<void> {
     try {

@@ -18,7 +18,7 @@ export class MatchResponseDto {
   allowsPrediction: boolean;
   /** Computed: whether both teams are real nations (not knockout placeholders). */
   teamsDefined: boolean;
-  /** Computed: moment after which predictions lock (24h before kickoff). */
+  /** Computed: moment after which predictions lock (1h before kickoff). */
   lockTime: Date;
 }
 
