@@ -11,6 +11,7 @@ import { GuestResponseDto } from './dto/guest-response.dto';
 import { SetMatchResultDto } from './dto/set-match-result.dto';
 import { MatchResponseDto, RankingEntryDto, RankingResponseDto, PredictionReminder } from './dto/match-response.dto';
 import { WORLD_CUP_2026_FIXTURE } from '../infrastructure/data/worldcup-2026-fixture';
+import { WorldCupResultsProvider } from '../infrastructure/providers/worldcup-results.provider';
 import { computePollaPrizes } from '../domain/polla-prizes';
 import { toColombiaDate } from '../../whatsapp/application/whatsapp.utils';
 
@@ -25,6 +26,7 @@ export class PollaService implements OnModuleInit {
     private readonly guestRepository: IPollaGuestRepository,
     private readonly partnersService: PartnersService,
     private readonly usersService: UsersService,
+    private readonly resultsProvider: WorldCupResultsProvider,
   ) {}
 
   /** Seed the World Cup fixture the first time the module boots. */
@@ -384,6 +386,79 @@ export class PollaService implements OnModuleInit {
       this.logger.log(`Consolidated points for ${consolidated} finished match(es) today.`);
     }
     return consolidated;
+  }
+
+  /**
+   * Fetch finished results from the external provider (TheSportsDB) and apply
+   * them to the matching fixtures, marking them as finished and recalculating
+   * points. Matching is by normalized team names; when several fixtures share
+   * the same pairing, the kickoff closest to the provider's timestamp is used.
+   * Already-finished matches with the same score are skipped. Never throws.
+   */
+  async syncResultsFromProvider(): Promise<number> {
+    const providerResults = await this.resultsProvider.fetchFinishedResults();
+    if (providerResults.length === 0) return 0;
+
+    const matches = await this.matchRepository.findAll();
+    const normalize = (value: string): string =>
+      value
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+
+    // Index our matches by the normalized "home|away" pairing.
+    const byPairing = new Map<string, Match[]>();
+    for (const match of matches) {
+      const key = `${normalize(match.homeTeam)}|${normalize(match.awayTeam)}`;
+      const list = byPairing.get(key);
+      if (list) list.push(match);
+      else byPairing.set(key, [match]);
+    }
+
+    let applied = 0;
+    for (const result of providerResults) {
+      const key = `${normalize(result.homeTeam)}|${normalize(result.awayTeam)}`;
+      const candidates = byPairing.get(key);
+      if (!candidates || candidates.length === 0) continue;
+
+      // Pick the fixture whose kickoff is closest to the provider's timestamp.
+      let match = candidates[0];
+      if (candidates.length > 1 && result.kickoffUtc) {
+        const target = result.kickoffUtc.getTime();
+        match = candidates.reduce((best, current) =>
+          Math.abs(current.date.getTime() - target) < Math.abs(best.date.getTime() - target)
+            ? current
+            : best,
+        );
+      }
+
+      // Skip if already finished with the same score (idempotent).
+      if (
+        match.status === MatchStatus.FINISHED &&
+        match.homeScore === result.homeScore &&
+        match.awayScore === result.awayScore
+      ) {
+        continue;
+      }
+
+      match.homeScore = result.homeScore;
+      match.awayScore = result.awayScore;
+      match.status = MatchStatus.FINISHED;
+      match.recalculatePredictionPoints();
+      await this.matchRepository.update(match.id!, {
+        homeScore: match.homeScore,
+        awayScore: match.awayScore,
+        status: match.status,
+        predictions: match.predictions,
+      });
+      applied += 1;
+    }
+
+    if (applied > 0) {
+      this.logger.log(`Auto-applied ${applied} result(s) from the external provider.`);
+    }
+    return applied;
   }
 
   /** UTC bounds [from, to) covering the Colombian calendar day of `now`. */

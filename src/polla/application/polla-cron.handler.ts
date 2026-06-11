@@ -5,7 +5,8 @@ import { PollaService } from './polla.service';
 /**
  * Scheduled jobs for the Polla:
  *  - Lock matches once they are within 15min of kickoff (no more predictions).
- *  - Consolidate the day's results every 30 min (4 PM–midnight) so the ranking stays up to date.
+ *  - Fetch results from the external provider and consolidate points every
+ *    30 min (4 PM–midnight) so the ranking stays up to date.
  */
 @Injectable()
 export class PollaCronHandler {
@@ -29,12 +30,23 @@ export class PollaCronHandler {
    * stays up to date shortly after each match ends. The consolidation is
    * idempotent (it only recalculates points of already-finished matches).
    */
+  /**
+   * During the World Cup, matches finish in the evening (Colombia time). This
+   * runs every 30 minutes from 4:00 PM to 11:30 PM Colombia time to fetch the
+   * latest results from the external provider and recalculate points, so the
+   * ranking stays up to date shortly after each match ends. Both steps are
+   * idempotent (they only touch finished matches / changed scores).
+   */
   @Cron('*/30 16-23 * * *', { timeZone: 'America/Bogota' })
   async consolidateDailyResults(): Promise<void> {
     try {
-      await this.pollaService.consolidateDailyResults(new Date());
+      const fetched = await this.pollaService.syncResultsFromProvider();
+      const consolidated = await this.pollaService.consolidateDailyResults(new Date());
+      this.logger.log(
+        `Polla results job ran: ${fetched} result(s) auto-applied, ${consolidated} match(es) recalculated.`,
+      );
     } catch (err) {
-      this.logger.error('Failed to consolidate daily results', err as Error);
+      this.logger.error('Failed to fetch/consolidate results', err as Error);
     }
   }
 }

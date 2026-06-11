@@ -60,4 +60,12 @@ export class PollaController {
   async setResult(@Param('id') id: string, @Body() dto: SetMatchResultDto) {
     return this.pollaService.setResult(id, dto);
   }
+
+  @Post('sync-results')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(UserRole.ADMIN)
+  async syncResults() {
+    const applied = await this.pollaService.syncResultsFromProvider();
+    return { applied };
+  }
 }
