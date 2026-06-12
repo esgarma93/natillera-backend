@@ -309,12 +309,13 @@ export class PollaService implements OnModuleInit {
 
   /**
    * Find active partners (with phone) who still have no prediction for matches
-   * kicking off within the next 24–48h. Used by the WhatsApp 48h reminder job.
-   * Returns one entry per partner with the list of matches they are missing.
+   * kicking off in the next 45–60 minutes. Used by the 1h-before WhatsApp
+   * reminder job, which runs every 15 min so each kickoff falls into exactly
+   * one window and partners are notified at most once per match.
    */
   async getMissingPredictionReminders(now: Date = new Date()): Promise<PredictionReminder[]> {
-    const from = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    const to = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+    const from = new Date(now.getTime() + 45 * 60 * 1000);
+    const to = new Date(now.getTime() + 60 * 60 * 1000);
     const matches = await this.matchRepository.findByDateRange(from, to);
 
     // Only matches that can still be predicted (real teams, not finished).

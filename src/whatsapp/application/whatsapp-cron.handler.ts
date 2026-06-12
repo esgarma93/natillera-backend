@@ -153,19 +153,19 @@ export class WhatsAppCronHandler {
   }
 
   /**
-   * Cron: every day at 10:00 AM Colombia time, remind active partners who still
-   * have NOT registered a prediction for matches kicking off in ~48h (window
-   * [now+24h, now+48h)). The 24h-wide window run once daily guarantees each
-   * match is notified on exactly one day, avoiding duplicate alerts.
+   * Cron: every 15 minutes, remind active partners who still have NOT registered
+   * a prediction for matches kicking off in the next 45–60 minutes. The 15-min
+   * window aligned with the 15-min cron guarantees each match falls into exactly
+   * one run, so partners are pinged at most once per match.
    */
-  @Cron('0 10 * * *', { timeZone: 'America/Bogota' })
+  @Cron('*/15 * * * *', { timeZone: 'America/Bogota' })
   async notifyMissingPollaPredictions(): Promise<void> {
-    this.logger.log('Running polla 48h prediction reminder cron...');
+    this.logger.log('Running polla 1h prediction reminder cron...');
 
     try {
       const reminders = await this.pollaService.getMissingPredictionReminders(new Date());
       if (reminders.length === 0) {
-        this.logger.log('No partners missing predictions in the 48h window, skipping.');
+        this.logger.log('No partners missing predictions in the 1h window, skipping.');
         return;
       }
 
@@ -191,11 +191,11 @@ export class WhatsAppCronHandler {
             whatsappNumber,
             `⏰ *Polla Mundial 2026 - ¡Faltan tus predicciones!*\n\n` +
             `Hola *${reminder.partnerName}* 👋\n\n` +
-            `Soy Nacho 🌿. En menos de *48 horas* se juega(n) ${reminder.matches.length === 1 ? 'este partido' : 'estos partidos'} y aún no registras tu predicción:\n\n` +
+            `Soy Nacho 🌿. En aproximadamente *1 hora* arranca(n) ${reminder.matches.length === 1 ? 'este partido' : 'estos partidos'} y aún no registras tu predicción:\n\n` +
             `━━━━━━━━━━━━━━━━━━\n` +
             `${matchLines}\n` +
             `━━━━━━━━━━━━━━━━━━\n\n` +
-            `📲 Entra a la app y registra tu marcador antes de que cierre (15 minutos antes del partido). ¡No te quedes sin puntos! 🏆`,
+            `📲 Entra a la app *ya* y registra tu marcador antes de que cierre (15 minutos antes del partido). ¡No te quedes sin puntos! 🏆`,
           );
           notified++;
         } catch (err) {
