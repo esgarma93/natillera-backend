@@ -31,6 +31,7 @@ export class UsersService {
       partnerId: user.partnerId,
       partnerName,
       activo: user.activo,
+      mustChangePassword: user.mustChangePassword,
       fechaCreacion: user.fechaCreacion,
       fechaActualizacion: user.fechaActualizacion,
     };

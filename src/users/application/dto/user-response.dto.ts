@@ -7,6 +7,7 @@ export class UserResponseDto {
   partnerId: string;
   partnerName?: string;
   activo: boolean;
+  mustChangePassword: boolean;
   fechaCreacion: Date;
   fechaActualizacion: Date;
 }
