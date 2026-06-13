@@ -152,4 +152,20 @@ export class UsersService {
 
     return user;
   }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+    const user = await this.userRepository.findById(userId);
+    if (!user) {
+      throw new NotFoundException(`User with id ${userId} not found`);
+    }
+
+    const isValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isValid) {
+      throw new BadRequestException('La clave actual es incorrecta.');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.update({ password: hashedPassword, mustChangePassword: false });
+    await this.userRepository.update(userId, user);
+  }
 }

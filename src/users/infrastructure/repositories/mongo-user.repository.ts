@@ -20,6 +20,7 @@ export class MongoUserRepository implements IUserRepository {
       role: doc.role as UserRole,
       partnerId: doc.partnerId.toString(),
       activo: doc.activo,
+      mustChangePassword: doc.mustChangePassword ?? true,
       fechaCreacion: doc.createdAt,
       fechaActualizacion: doc.updatedAt,
     });
@@ -57,6 +58,7 @@ export class MongoUserRepository implements IUserRepository {
       role: user.role,
       partnerId: user.partnerId,
       activo: user.activo,
+      mustChangePassword: user.mustChangePassword,
     });
     const saved = await created.save();
     return this.toDomain(saved);

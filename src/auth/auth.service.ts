@@ -47,8 +47,13 @@ export class AuthService {
         role: user.role,
         partnerId: user.partnerId,
         partnerName,
+        mustChangePassword: user.mustChangePassword ?? false,
       },
     };
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+    await this.usersService.changePassword(userId, currentPassword, newPassword);
   }
 
   async validateToken(token: string): Promise<any> {

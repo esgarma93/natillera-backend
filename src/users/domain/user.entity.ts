@@ -10,6 +10,7 @@ export interface IUser {
   role: UserRole;
   partnerId: string; // Reference to Partner
   activo: boolean;
+  mustChangePassword: boolean;
   fechaCreacion: Date;
   fechaActualizacion: Date;
 }
@@ -21,6 +22,7 @@ export class User implements IUser {
   role: UserRole;
   partnerId: string;
   activo: boolean;
+  mustChangePassword: boolean;
   fechaCreacion: Date;
   fechaActualizacion: Date;
 
@@ -31,6 +33,7 @@ export class User implements IUser {
     this.role = partial.role || UserRole.VIEWER;
     this.partnerId = partial.partnerId || '';
     this.activo = partial.activo ?? true;
+    this.mustChangePassword = partial.mustChangePassword ?? false;
     this.fechaCreacion = partial.fechaCreacion || new Date();
     this.fechaActualizacion = partial.fechaActualizacion || new Date();
   }
@@ -38,6 +41,7 @@ export class User implements IUser {
   static create(data: Partial<IUser>): User {
     return new User({
       ...data,
+      mustChangePassword: data.mustChangePassword ?? true,
       fechaCreacion: new Date(),
       fechaActualizacion: new Date(),
       activo: data.activo ?? true,
@@ -50,6 +54,7 @@ export class User implements IUser {
     if (data.role !== undefined) this.role = data.role;
     if (data.partnerId !== undefined) this.partnerId = data.partnerId;
     if (data.activo !== undefined) this.activo = data.activo;
+    if (data.mustChangePassword !== undefined) this.mustChangePassword = data.mustChangePassword;
     this.fechaActualizacion = new Date();
   }
 }

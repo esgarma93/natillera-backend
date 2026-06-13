@@ -18,6 +18,9 @@ export class UserDocument extends Document {
   @Prop({ default: true })
   activo: boolean;
 
+  @Prop({ default: true })
+  mustChangePassword!: boolean;
+
   @Prop()
   createdAt: Date;
 

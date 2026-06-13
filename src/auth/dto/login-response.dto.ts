@@ -8,5 +8,6 @@ export class LoginResponseDto {
     role: UserRole;
     partnerId: string;
     partnerName?: string;
+    mustChangePassword: boolean;
   };
 }
