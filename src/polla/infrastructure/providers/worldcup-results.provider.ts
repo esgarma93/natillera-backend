@@ -141,40 +141,73 @@ export class WorldCupResultsProvider {
    * Returns the finished results for the configured World Cup season, with
    * team names translated to Spanish. Never throws: on any failure it logs and
    * returns an empty array so the caller (a cron job) keeps running.
+   *
+   * Uses `eventspastleague.php` (last ~15 past events for a league) which is
+   * more reliable than `eventsseason.php` on the free API key: it returns
+   * results without needing a season param and doesn't require full-season
+   * indexing. Falls back to `eventsseason.php` if the primary URL returns
+   * nothing so that results from earlier in the season are still picked up.
    */
   async fetchFinishedResults(): Promise<ProviderResult[]> {
-    const url = `https://www.thesportsdb.com/api/v1/json/${this.apiKey}/eventsseason.php?id=${this.leagueId}&s=${this.season}`;
-    let events: SportsDbEvent[];
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        this.logger.warn(`Results provider responded ${response.status}; skipping.`);
-        return [];
+    const urls = [
+      `https://www.thesportsdb.com/api/v1/json/${this.apiKey}/eventspastleague.php?id=${this.leagueId}`,
+      `https://www.thesportsdb.com/api/v1/json/${this.apiKey}/eventsseason.php?id=${this.leagueId}&s=${this.season}`,
+    ];
+
+    let events: SportsDbEvent[] = [];
+    for (const url of urls) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          this.logger.warn(`Results provider (${url}) responded ${response.status}; trying next.`);
+          continue;
+        }
+        const data = (await response.json()) as { events?: SportsDbEvent[] | null };
+        const fetched = data.events ?? [];
+        if (fetched.length === 0) {
+          this.logger.warn(`Results provider returned no events for URL: ${url}`);
+          continue;
+        }
+        this.logger.log(`Results provider: ${fetched.length} event(s) fetched from ${url}`);
+        events = fetched;
+        break;
+      } catch (err) {
+        this.logger.warn(`Could not reach results provider (${url}): ${(err as Error).message}`);
       }
-      const data = (await response.json()) as { events?: SportsDbEvent[] | null };
-      events = data.events || [];
-    } catch (err) {
-      this.logger.warn(`Could not reach results provider: ${(err as Error).message}`);
-      return [];
     }
 
+    if (events.length === 0) return [];
+
     const results: ProviderResult[] = [];
+    let skippedStatus = 0;
+    let skippedScore = 0;
+    let skippedTranslation = 0;
+
     for (const event of events) {
-      if (!this.isFinished(event.strStatus)) continue;
-      if (event.intHomeScore == null || event.intAwayScore == null) continue;
+      if (!this.isFinished(event.strStatus)) { skippedStatus++; continue; }
+      if (event.intHomeScore == null || event.intAwayScore == null) { skippedScore++; continue; }
 
       const homeScore = Number(event.intHomeScore);
       const awayScore = Number(event.intAwayScore);
-      if (!Number.isInteger(homeScore) || !Number.isInteger(awayScore)) continue;
+      if (!Number.isInteger(homeScore) || !Number.isInteger(awayScore)) { skippedScore++; continue; }
 
       const homeTeam = this.translateTeam(event.strHomeTeam);
       const awayTeam = this.translateTeam(event.strAwayTeam);
-      if (!homeTeam || !awayTeam) continue;
+      if (!homeTeam || !awayTeam) {
+        skippedTranslation++;
+        this.logger.warn(
+          `No translation for "${event.strHomeTeam}" vs "${event.strAwayTeam}" (status: ${event.strStatus ?? '?'}) — add to EN_TO_ES_TEAM map.`,
+        );
+        continue;
+      }
 
       const kickoffUtc = event.strTimestamp ? new Date(`${event.strTimestamp.replace(' ', 'T')}Z`) : undefined;
-
       results.push({ homeTeam, awayTeam, kickoffUtc, homeScore, awayScore });
     }
+
+    this.logger.log(
+      `Results provider parsed: ${results.length} usable, ${skippedStatus} not finished, ${skippedScore} missing score, ${skippedTranslation} untranslatable.`,
+    );
 
     return results;
   }
