@@ -29,34 +29,55 @@ export class PollaService implements OnModuleInit {
     private readonly resultsProvider: WorldCupResultsProvider,
   ) {}
 
-  /** Seed the World Cup fixture the first time the module boots. */
+  /** Seed the World Cup fixture on first boot; sync confirmed team names on subsequent boots. */
   async onModuleInit(): Promise<void> {
     try {
-      const existing = await this.matchRepository.count();
-      if (existing > 0) {
+      const count = await this.matchRepository.count();
+      if (count === 0) {
+        this.logger.log('Seeding World Cup 2026 fixture...');
+        const now = new Date();
+        for (const fixture of WORLD_CUP_2026_FIXTURE) {
+          const date = new Date(fixture.date);
+          const match = new Match({
+            matchNumber: fixture.matchNumber,
+            phase: fixture.phase,
+            group: fixture.group,
+            homeTeam: fixture.homeTeam,
+            awayTeam: fixture.awayTeam,
+            stadium: fixture.stadium,
+            city: fixture.city,
+            date,
+            status: this.computeStatus(date, now),
+            predictions: [],
+          });
+          await this.matchRepository.create(match);
+        }
+        this.logger.log(`Seeded ${WORLD_CUP_2026_FIXTURE.length} matches.`);
         return;
       }
-      this.logger.log('Seeding World Cup 2026 fixture...');
-      const now = new Date();
+      // Sync team names: when the fixture now has real teams but the DB still has
+      // placeholder names (e.g. '1.º Grupo A'), update only those fields so that
+      // teamsDefined() returns true and predictions can open.
+      let synced = 0;
       for (const fixture of WORLD_CUP_2026_FIXTURE) {
-        const date = new Date(fixture.date);
-        const match = new Match({
-          matchNumber: fixture.matchNumber,
-          phase: fixture.phase,
-          group: fixture.group,
-          homeTeam: fixture.homeTeam,
-          awayTeam: fixture.awayTeam,
-          stadium: fixture.stadium,
-          city: fixture.city,
-          date,
-          status: this.computeStatus(date, now),
-          predictions: [],
-        });
-        await this.matchRepository.create(match);
+        const hasRealHome = Match.isTeamDefined(fixture.homeTeam);
+        const hasRealAway = Match.isTeamDefined(fixture.awayTeam);
+        if (!hasRealHome && !hasRealAway) continue;
+        const dbMatch = await this.matchRepository.findByMatchNumber(fixture.matchNumber);
+        if (!dbMatch) continue;
+        const update: Partial<Match> = {};
+        if (hasRealHome && !Match.isTeamDefined(dbMatch.homeTeam)) update.homeTeam = fixture.homeTeam;
+        if (hasRealAway && !Match.isTeamDefined(dbMatch.awayTeam)) update.awayTeam = fixture.awayTeam;
+        if (Object.keys(update).length > 0) {
+          await this.matchRepository.update(dbMatch.id!, update);
+          synced++;
+        }
       }
-      this.logger.log(`Seeded ${WORLD_CUP_2026_FIXTURE.length} matches.`);
+      if (synced > 0) {
+        this.logger.log(`Synced team names for ${synced} match(es) from fixture.`);
+      }
     } catch (err) {
-      this.logger.error('Failed to seed World Cup fixture', err as Error);
+      this.logger.error('Failed to seed/sync World Cup fixture', err as Error);
     }
   }
 
