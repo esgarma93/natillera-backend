@@ -130,11 +130,15 @@ export class WorldCupResultsProvider {
     return EN_TO_ES_TEAM[normalizeName(englishName)] || null;
   }
 
-  /** A status string that indicates the match has finished. */
+  /**
+   * Whether the status indicates the match ended in regular time (90 min).
+   * AET and PEN are intentionally excluded: those matches must be entered
+   * manually by the admin with the 90-minute score (Option A).
+   */
   private isFinished(status?: string | null): boolean {
     if (!status) return false;
     const s = status.toLowerCase();
-    return s.includes('finished') || s === 'ft' || s.includes('full time') || s.includes('aet') || s.includes('pen');
+    return s === 'ft' || s.includes('full time') || s.includes('finished');
   }
 
   /**
