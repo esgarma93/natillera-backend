@@ -42,6 +42,7 @@ import {
 @Injectable()
 export class WhatsAppPaymentHandler {
   private readonly logger = new Logger(WhatsAppPaymentHandler.name);
+  private readonly POLLA_FEE = 30_000;
 
   constructor(
     private readonly paymentsService: PaymentsService,
@@ -297,8 +298,16 @@ export class WhatsAppPaymentHandler {
     }
 
     if (detectedAmount !== null) {
+      // Detect Polla del Mundial 2026 entry fee bundled into the transfer.
+      // When a partner pays cuota + $30k in a single transfer, we register
+      // only the quota amount and note the polla fee separately.
+      const includesPollaFee = paymentMonth === 6 && paymentYear === 2026 &&
+        detectedAmount === partner.montoCuota + this.POLLA_FEE;
+      // effectiveAmount is what we register as the quota payment
+      const effectiveAmount = includesPollaFee ? partner.montoCuota : detectedAmount;
+
       // ── Sponsored partner detection ──
-      if (!skipSponsorCheck && detectedAmount !== partner.montoCuota) {
+      if (!skipSponsorCheck && !includesPollaFee && detectedAmount !== partner.montoCuota) {
         const allPartners = await this.partnersService.findAll();
         const sponsoredPartners = allPartners.filter(
           p => p.idPartnerPatrocinador === partner.id && p.activo,
@@ -414,11 +423,11 @@ export class WhatsAppPaymentHandler {
         if (existingPayment) {
           if (existingPayment.amount < existingPayment.expectedAmount) {
             await this.paymentsService.accumulatePartialPayment(
-              existingPayment.id, detectedAmount,
+              existingPayment.id, effectiveAmount,
               imageUrl, storageKey, parsedVoucher.type,
             );
 
-            const newTotal = existingPayment.amount + detectedAmount;
+            const newTotal = existingPayment.amount + effectiveAmount;
             const covered = newTotal >= existingPayment.expectedAmount;
 
             let msg =
@@ -459,10 +468,11 @@ export class WhatsAppPaymentHandler {
 
       // ── Create new payment ──
       try {
-        // When the payment amount differs from the original voucher amount (e.g. split payment),
-        // use a copy of parsedVoucher with the adjusted amount so validation compares correctly.
-        const voucherForValidation = (parsedVoucher.amount !== null && parsedVoucher.amount !== detectedAmount)
-          ? { ...parsedVoucher, amount: detectedAmount }
+        // When the payment amount differs from the original voucher amount (e.g. split payment
+        // or polla fee bundled), use a copy of parsedVoucher with the adjusted amount so
+        // validation compares correctly against the quota only.
+        const voucherForValidation = (parsedVoucher.amount !== null && parsedVoucher.amount !== effectiveAmount)
+          ? { ...parsedVoucher, amount: effectiveAmount }
           : parsedVoucher;
 
         const validation = this.voucherParserService.validatePaymentVoucher(
@@ -482,7 +492,7 @@ export class WhatsAppPaymentHandler {
 
         const paymentResult = await this.paymentsService.createFromWhatsAppWithValidation(
           partner.id,
-          detectedAmount,
+          effectiveAmount,
           imageUrl,
           messageId,
           parsedVoucher.type,
@@ -502,7 +512,10 @@ export class WhatsAppPaymentHandler {
           `🎰 Rifa: *#${partner.numeroRifa}*\n` +
           sponsorLine +
           `💰 Monto detectado: *$${detectedAmount.toLocaleString('es-CO')}*\n` +
-          `💵 Cuota esperada: *$${partner.montoCuota.toLocaleString('es-CO')}*\n` +
+          (includesPollaFee
+            ? `🏆 Incluye *$${this.POLLA_FEE.toLocaleString('es-CO')}* de entrada a la Polla del Mundial\n` +
+              `💵 Cuota registrada: *$${partner.montoCuota.toLocaleString('es-CO')}*\n`
+            : `💵 Cuota esperada: *$${partner.montoCuota.toLocaleString('es-CO')}*\n`) +
           `📅 Mes: *${getMonthName(paymentMonth)} ${paymentYear}*\n` +
           (latePenalty && latePenalty > 0
             ? `⚠️ Multa por retraso: *$${latePenalty.toLocaleString('es-CO')}*\n`
