@@ -53,6 +53,7 @@ export class MongoMatchRepository implements IMatchRepository {
       status: match.status,
       homeScore: match.homeScore,
       awayScore: match.awayScore,
+      penaltyWinner: match.penaltyWinner,
       predictions: match.predictions,
     });
     const saved = await created.save();
@@ -84,6 +85,7 @@ export class MongoMatchRepository implements IMatchRepository {
       status: doc.status,
       homeScore: doc.homeScore,
       awayScore: doc.awayScore,
+      penaltyWinner: doc.penaltyWinner || undefined,
       predictions: (doc.predictions || []) as any,
       createdAt: doc.createdAt,
       updatedAt: doc.updatedAt,

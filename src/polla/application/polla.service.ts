@@ -161,15 +161,69 @@ export class PollaService implements OnModuleInit {
     match.homeScore = dto.homeScore;
     match.awayScore = dto.awayScore;
     match.status = MatchStatus.FINISHED;
+    // Store penalty winner when the admin indicates who won the shootout.
+    match.penaltyWinner = dto.penaltyWinner?.trim() || undefined;
     match.recalculatePredictionPoints();
 
     const updated = await this.matchRepository.update(matchId, {
       homeScore: match.homeScore,
       awayScore: match.awayScore,
       status: match.status,
+      penaltyWinner: match.penaltyWinner,
       predictions: match.predictions,
     });
+
+    // Auto-propagate winner/loser to the next-round bracket slots.
+    await this.propagateKnockoutResult(updated!);
+
     return this.toResponseDto(updated!);
+  }
+
+  /**
+   * When a knockout match finishes (by score or penalties), find every downstream
+   * match that still has a placeholder referencing this match number ("Ganador P{N}"
+   * or "Perdedor P{N}") and replace it with the real team name.
+   */
+  private async propagateKnockoutResult(finishedMatch: Match): Promise<void> {
+    if (finishedMatch.phase === MatchPhase.GRUPOS) return;
+    if (
+      finishedMatch.homeScore === undefined ||
+      finishedMatch.awayScore === undefined
+    ) return;
+
+    let winner: string | undefined;
+    let loser: string | undefined;
+
+    if (finishedMatch.homeScore !== finishedMatch.awayScore) {
+      const homeWon = finishedMatch.homeScore > finishedMatch.awayScore;
+      winner = homeWon ? finishedMatch.homeTeam : finishedMatch.awayTeam;
+      loser = homeWon ? finishedMatch.awayTeam : finishedMatch.homeTeam;
+    } else if (finishedMatch.penaltyWinner) {
+      winner = finishedMatch.penaltyWinner;
+      loser = winner === finishedMatch.homeTeam
+        ? finishedMatch.awayTeam
+        : finishedMatch.homeTeam;
+    }
+
+    if (!winner) return; // tie with no penalty winner stored yet
+
+    const n = finishedMatch.matchNumber;
+    const ganadorKey = `Ganador P${n}`;
+    const perdedorKey = `Perdedor P${n}`;
+
+    const allMatches = await this.matchRepository.findAll();
+    for (const m of allMatches) {
+      if (m.phase === MatchPhase.GRUPOS) continue;
+      const update: Partial<Match> = {};
+      if (m.homeTeam === ganadorKey) update.homeTeam = winner;
+      else if (m.homeTeam === perdedorKey) update.homeTeam = loser;
+      if (m.awayTeam === ganadorKey) update.awayTeam = winner;
+      else if (m.awayTeam === perdedorKey) update.awayTeam = loser;
+      if (Object.keys(update).length > 0) {
+        await this.matchRepository.update(m.id!, update);
+        this.logger.log(`Bracket P${n}: propagated ${JSON.stringify(update)}`);
+      }
+    }
   }
 
   /** Update the team names of a knockout match (admin). Allows correcting placeholder names. */
@@ -186,11 +240,15 @@ export class PollaService implements OnModuleInit {
   }
 
   /**
-   * Auto-assign team names for knockout matches whose placeholders can be resolved
-   * from already-finished feeder matches. Placeholder format: "Ganador P{N}" or "Perdedor P{N}".
-   * Returns how many matches were updated and how many were skipped (feeder not finished yet).
+   * Sync latest results from TheSportsDB, then auto-assign team names for knockout
+   * matches whose placeholders ("Ganador P{N}" / "Perdedor P{N}") can now be
+   * resolved from finished feeder matches.
+   * Returns how many provider results were synced, how many bracket slots were
+   * updated, and how many remain pending (feeder not finished or decided by penalties).
    */
-  async assignKnockoutTeams(): Promise<{ updated: number; skipped: number }> {
+  async assignKnockoutTeams(): Promise<{ synced: number; updated: number; skipped: number }> {
+    const synced = await this.syncResultsFromProvider();
+
     const allMatches = await this.matchRepository.findAll();
     const byNumber = new Map(allMatches.map(m => [m.matchNumber, m]));
 
@@ -204,11 +262,22 @@ export class PollaService implements OnModuleInit {
       const feeder = byNumber.get(parseInt(m[2], 10));
       if (!feeder || feeder.status !== MatchStatus.FINISHED) return null;
       if (feeder.homeScore === undefined || feeder.awayScore === undefined) return null;
-      if (feeder.homeScore === feeder.awayScore) return null; // draw — can't determine without penalties
-      const homeWon = feeder.homeScore > feeder.awayScore;
-      return role === 'winner'
-        ? (homeWon ? feeder.homeTeam : feeder.awayTeam)
-        : (homeWon ? feeder.awayTeam : feeder.homeTeam);
+
+      let winner: string | undefined;
+      let loser: string | undefined;
+
+      if (feeder.homeScore !== feeder.awayScore) {
+        const homeWon = feeder.homeScore > feeder.awayScore;
+        winner = homeWon ? feeder.homeTeam : feeder.awayTeam;
+        loser = homeWon ? feeder.awayTeam : feeder.homeTeam;
+      } else if (feeder.penaltyWinner) {
+        // Penalty shootout: winner stored by the provider or manually by admin.
+        winner = feeder.penaltyWinner;
+        loser = winner === feeder.homeTeam ? feeder.awayTeam : feeder.homeTeam;
+      }
+
+      if (!winner) return null; // tied score, no penalty winner yet — admin uses 🏳
+      return role === 'winner' ? winner : loser!;
     };
 
     for (const match of allMatches) {
@@ -234,8 +303,8 @@ export class PollaService implements OnModuleInit {
       }
     }
 
-    this.logger.log(`assignKnockoutTeams: updated=${updated}, skipped=${skipped}`);
-    return { updated, skipped };
+    this.logger.log(`assignKnockoutTeams: synced=${synced}, updated=${updated}, skipped=${skipped}`);
+    return { synced, updated, skipped };
   }
 
   /** Aggregate every partner's points across all scored matches, with prizes. */
@@ -534,13 +603,22 @@ export class PollaService implements OnModuleInit {
       match.homeScore = result.homeScore;
       match.awayScore = result.awayScore;
       match.status = MatchStatus.FINISHED;
+      // Preserve existing penaltyWinner if already set; use provider's value otherwise.
+      if (!match.penaltyWinner && result.penaltyWinner) {
+        match.penaltyWinner = result.penaltyWinner;
+      }
       match.recalculatePredictionPoints();
-      await this.matchRepository.update(match.id!, {
+      const updatedMatch = await this.matchRepository.update(match.id!, {
         homeScore: match.homeScore,
         awayScore: match.awayScore,
         status: match.status,
+        penaltyWinner: match.penaltyWinner,
         predictions: match.predictions,
       });
+
+      // Auto-propagate winner/loser to next-round bracket slots.
+      await this.propagateKnockoutResult(updatedMatch!);
+
       applied += 1;
     }
 
@@ -580,6 +658,7 @@ export class PollaService implements OnModuleInit {
       status: match.status,
       homeScore: match.homeScore,
       awayScore: match.awayScore,
+      penaltyWinner: match.penaltyWinner,
       predictions: match.predictions,
       allowsPrediction: match.allowsPrediction(new Date()),
       teamsDefined: match.teamsDefined(),

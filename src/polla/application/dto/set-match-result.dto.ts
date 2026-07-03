@@ -1,4 +1,4 @@
-import { IsInt, Min, Max } from 'class-validator';
+import { IsInt, Min, Max, IsOptional, IsString } from 'class-validator';
 
 export class SetMatchResultDto {
   @IsInt()
@@ -10,4 +10,9 @@ export class SetMatchResultDto {
   @Min(0)
   @Max(30)
   awayScore: number;
+
+  /** Team that won on penalties (only when homeScore === awayScore). */
+  @IsOptional()
+  @IsString()
+  penaltyWinner?: string;
 }

@@ -58,6 +58,8 @@ export class PollaController {
   }
 
   @Put('matches/:id/result')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(UserRole.ADMIN)
   async setResult(@Param('id') id: string, @Body() dto: SetMatchResultDto) {
     return this.pollaService.setResult(id, dto);
   }

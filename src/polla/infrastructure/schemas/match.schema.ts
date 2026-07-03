@@ -39,6 +39,9 @@ export class MatchSchema {
   @Prop()
   awayScore: number;
 
+  @Prop()
+  penaltyWinner: string;
+
   @Prop({
     type: [{
       partnerId: String,

@@ -49,6 +49,8 @@ export interface IMatch {
   /** Final score (only when status = finished). */
   homeScore?: number;
   awayScore?: number;
+  /** Team that advanced via penalty shootout (only when homeScore === awayScore). */
+  penaltyWinner?: string;
   predictions: IPrediction[];
   createdAt: Date;
   updatedAt: Date;
@@ -95,6 +97,7 @@ export class Match implements IMatch {
   status: MatchStatus;
   homeScore?: number;
   awayScore?: number;
+  penaltyWinner?: string;
   predictions: IPrediction[];
   createdAt: Date;
   updatedAt: Date;
@@ -112,6 +115,7 @@ export class Match implements IMatch {
     this.status = partial.status || MatchStatus.OPEN;
     this.homeScore = partial.homeScore;
     this.awayScore = partial.awayScore;
+    this.penaltyWinner = partial.penaltyWinner;
     this.predictions = partial.predictions || [];
     this.createdAt = partial.createdAt || new Date();
     this.updatedAt = partial.updatedAt || new Date();

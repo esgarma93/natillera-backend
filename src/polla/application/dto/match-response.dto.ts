@@ -13,6 +13,8 @@ export class MatchResponseDto {
   status: MatchStatus;
   homeScore?: number;
   awayScore?: number;
+  /** Team that won via penalty shootout (only when scores are equal). */
+  penaltyWinner?: string;
   predictions: IPrediction[];
   /** Computed: whether predictions can still be submitted right now. */
   allowsPrediction: boolean;

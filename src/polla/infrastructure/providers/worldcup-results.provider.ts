@@ -10,6 +10,8 @@ export interface ProviderResult {
   kickoffUtc?: Date;
   homeScore: number;
   awayScore: number;
+  /** Team that advanced via penalty shootout (only when scores are equal after AET). */
+  penaltyWinner?: string;
 }
 
 /** Raw event shape returned by TheSportsDB `eventsseason.php`. */
@@ -22,6 +24,10 @@ interface SportsDbEvent {
   strStatus?: string | null;
   strTimestamp?: string | null;
   dateEvent?: string | null;
+  /** Narrative result text, e.g. "Germany Won 4-2 on Penalties" (when available). */
+  strResult?: string | null;
+  /** Penalty score for the home team (when provided by the API). */
+  intScoreVotes?: string | null;
 }
 
 /**
@@ -131,14 +137,47 @@ export class WorldCupResultsProvider {
   }
 
   /**
-   * Whether the status indicates the match ended in regular time (90 min).
-   * AET and PEN are intentionally excluded: those matches must be entered
-   * manually by the admin with the 90-minute score (Option A).
+   * Whether the status indicates the match is completely over (FT, AET, or penalty shootout).
+   * All three are included so the result gets persisted with the correct 90-min score and,
+   * for penalty matches, we attempt to extract the winner from provider metadata.
    */
   private isFinished(status?: string | null): boolean {
     if (!status) return false;
     const s = status.toLowerCase();
-    return s === 'ft' || s.includes('full time') || s.includes('finished');
+    return (
+      s === 'ft' || s === 'aet' || s === 'ap' || s === 'pso' ||
+      s.includes('full time') || s.includes('finished') ||
+      s.includes('extra time') || s.includes('penalt')
+    );
+  }
+
+  /** True when the status indicates the match was decided by penalties. */
+  private isPenalty(status?: string | null): boolean {
+    if (!status) return false;
+    const s = status.toLowerCase();
+    return s === 'ap' || s === 'pso' || (s.includes('penalt') && !s.includes('extra time'));
+  }
+
+  /**
+   * Best-effort: try to determine which team won the penalty shootout from the
+   * narrative `strResult` field TheSportsDB sometimes includes (e.g. "Germany Won 4-2
+   * on Penalties"). Returns the Spanish team name if found, null otherwise.
+   */
+  private extractPenaltyWinner(
+    event: SportsDbEvent,
+    homeTeamEs: string,
+    awayTeamEs: string,
+  ): string | null {
+    const raw = event.strResult ?? '';
+    if (!raw) return null;
+    const r = normalizeName(raw);
+    if (!r.includes('won') && !r.includes('winner') && !r.includes('win')) return null;
+    for (const [engKey, esName] of Object.entries(EN_TO_ES_TEAM)) {
+      if (r.includes(engKey) && (esName === homeTeamEs || esName === awayTeamEs)) {
+        return esName;
+      }
+    }
+    return null;
   }
 
   /**
@@ -206,7 +245,19 @@ export class WorldCupResultsProvider {
       }
 
       const kickoffUtc = event.strTimestamp ? new Date(`${event.strTimestamp.replace(' ', 'T')}Z`) : undefined;
-      results.push({ homeTeam, awayTeam, kickoffUtc, homeScore, awayScore });
+
+      // For penalty matches (equal score after FT/AET), try to determine who advanced.
+      let penaltyWinner: string | undefined;
+      if (homeScore === awayScore && this.isPenalty(event.strStatus)) {
+        penaltyWinner = this.extractPenaltyWinner(event, homeTeam, awayTeam) ?? undefined;
+        if (penaltyWinner) {
+          this.logger.log(`Penalty winner detected from provider: ${penaltyWinner}`);
+        } else {
+          this.logger.warn(`Could not determine penalty winner for ${homeTeam} vs ${awayTeam} — admin must set manually.`);
+        }
+      }
+
+      results.push({ homeTeam, awayTeam, kickoffUtc, homeScore, awayScore, penaltyWinner });
     }
 
     this.logger.log(
