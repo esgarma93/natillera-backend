@@ -1,5 +1,5 @@
 import { Injectable, Inject, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
-import { Match, MatchStatus, POINTS, PREDICTION_LOCK_MINUTES } from '../domain/match.entity';
+import { Match, MatchPhase, MatchStatus, POINTS, PREDICTION_LOCK_MINUTES } from '../domain/match.entity';
 import { IMatchRepository, MATCH_REPOSITORY } from '../domain/match.repository';
 import { IPollaGuestRepository, POLLA_GUEST_REPOSITORY } from '../domain/polla-guest.repository';
 import { PollaGuest } from '../domain/polla-guest.entity';
@@ -9,6 +9,7 @@ import { CreatePredictionDto } from './dto/create-prediction.dto';
 import { CreateGuestDto } from './dto/create-guest.dto';
 import { GuestResponseDto } from './dto/guest-response.dto';
 import { SetMatchResultDto } from './dto/set-match-result.dto';
+import { UpdateMatchTeamsDto } from './dto/update-match-teams.dto';
 import { MatchResponseDto, RankingEntryDto, RankingResponseDto, PredictionReminder } from './dto/match-response.dto';
 import { WORLD_CUP_2026_FIXTURE } from '../infrastructure/data/worldcup-2026-fixture';
 import { WorldCupResultsProvider } from '../infrastructure/providers/worldcup-results.provider';
@@ -169,6 +170,72 @@ export class PollaService implements OnModuleInit {
       predictions: match.predictions,
     });
     return this.toResponseDto(updated!);
+  }
+
+  /** Update the team names of a knockout match (admin). Allows correcting placeholder names. */
+  async updateMatchTeams(matchId: string, dto: UpdateMatchTeamsDto): Promise<MatchResponseDto> {
+    const match = await this.matchRepository.findById(matchId);
+    if (!match) throw new NotFoundException(`Match ${matchId} not found`);
+
+    const update: Partial<Match> = {};
+    if (dto.homeTeam !== undefined) update.homeTeam = dto.homeTeam.trim();
+    if (dto.awayTeam !== undefined) update.awayTeam = dto.awayTeam.trim();
+
+    const updated = await this.matchRepository.update(matchId, update);
+    return this.toResponseDto(updated!);
+  }
+
+  /**
+   * Auto-assign team names for knockout matches whose placeholders can be resolved
+   * from already-finished feeder matches. Placeholder format: "Ganador P{N}" or "Perdedor P{N}".
+   * Returns how many matches were updated and how many were skipped (feeder not finished yet).
+   */
+  async assignKnockoutTeams(): Promise<{ updated: number; skipped: number }> {
+    const allMatches = await this.matchRepository.findAll();
+    const byNumber = new Map(allMatches.map(m => [m.matchNumber, m]));
+
+    let updated = 0;
+    let skipped = 0;
+
+    const resolvePlaceholder = (placeholder: string): string | null => {
+      const m = /^(Ganador|Perdedor) P(\d+)$/i.exec(placeholder.trim());
+      if (!m) return null;
+      const role = m[1].toLowerCase() === 'ganador' ? 'winner' : 'loser';
+      const feeder = byNumber.get(parseInt(m[2], 10));
+      if (!feeder || feeder.status !== MatchStatus.FINISHED) return null;
+      if (feeder.homeScore === undefined || feeder.awayScore === undefined) return null;
+      if (feeder.homeScore === feeder.awayScore) return null; // draw — can't determine without penalties
+      const homeWon = feeder.homeScore > feeder.awayScore;
+      return role === 'winner'
+        ? (homeWon ? feeder.homeTeam : feeder.awayTeam)
+        : (homeWon ? feeder.awayTeam : feeder.homeTeam);
+    };
+
+    for (const match of allMatches) {
+      if (match.phase === MatchPhase.GRUPOS) continue;
+
+      const update: Partial<Match> = {};
+
+      if (!Match.isTeamDefined(match.homeTeam)) {
+        const resolved = resolvePlaceholder(match.homeTeam);
+        if (resolved) update.homeTeam = resolved;
+        else skipped++;
+      }
+
+      if (!Match.isTeamDefined(match.awayTeam)) {
+        const resolved = resolvePlaceholder(match.awayTeam);
+        if (resolved) update.awayTeam = resolved;
+        else skipped++;
+      }
+
+      if (Object.keys(update).length > 0) {
+        await this.matchRepository.update(match.id!, update);
+        updated++;
+      }
+    }
+
+    this.logger.log(`assignKnockoutTeams: updated=${updated}, skipped=${skipped}`);
+    return { updated, skipped };
   }
 
   /** Aggregate every partner's points across all scored matches, with prizes. */

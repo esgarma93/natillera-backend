@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { PollaService } from '../application/polla.service';
 import { CreatePredictionDto } from '../application/dto/create-prediction.dto';
 import { CreateGuestDto } from '../application/dto/create-guest.dto';
 import { SetMatchResultDto } from '../application/dto/set-match-result.dto';
+import { UpdateMatchTeamsDto } from '../application/dto/update-match-teams.dto';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { UserRole } from '../../users/domain/user.entity';
@@ -59,6 +60,20 @@ export class PollaController {
   @Put('matches/:id/result')
   async setResult(@Param('id') id: string, @Body() dto: SetMatchResultDto) {
     return this.pollaService.setResult(id, dto);
+  }
+
+  @Patch('matches/:id/teams')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(UserRole.ADMIN)
+  async updateTeams(@Param('id') id: string, @Body() dto: UpdateMatchTeamsDto) {
+    return this.pollaService.updateMatchTeams(id, dto);
+  }
+
+  @Post('assign-knockout-teams')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(UserRole.ADMIN)
+  async assignKnockoutTeams() {
+    return this.pollaService.assignKnockoutTeams();
   }
 
   @Post('sync-results')
