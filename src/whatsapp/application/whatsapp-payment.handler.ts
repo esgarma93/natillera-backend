@@ -301,8 +301,26 @@ export class WhatsAppPaymentHandler {
       // Detect Polla del Mundial 2026 entry fee bundled into the transfer.
       // When a partner pays cuota + $30k in a single transfer, we register
       // only the quota amount and note the polla fee separately.
-      const includesPollaFee = paymentMonth === 6 && paymentYear === 2026 &&
+      // Guard with !skipSponsorCheck: in recursive calls (split/sponsor flows) the amount
+      // is already the exact quota, so polla detection should never fire there.
+      // Also verify the amount doesn't coincidentally match a sponsored partner's quota —
+      // in that case Case A (redirect to sponsored) takes priority over polla detection.
+      let includesPollaFee = !skipSponsorCheck &&
+        paymentMonth === 6 && paymentYear === 2026 &&
         detectedAmount === partner.montoCuota + this.POLLA_FEE;
+
+      if (includesPollaFee) {
+        const allPartners = await this.partnersService.findAll();
+        const hasSponsoredWithSameQuota = allPartners.some(
+          p => p.idPartnerPatrocinador === partner.id && p.activo && p.montoCuota === detectedAmount,
+        );
+        if (hasSponsoredWithSameQuota) {
+          // The amount matches a sponsored partner's quota: let the sponsor check handle it
+          // so the partner can redirect the payment to the sponsored partner (Case A).
+          includesPollaFee = false;
+        }
+      }
+
       // effectiveAmount is what we register as the quota payment
       const effectiveAmount = includesPollaFee ? partner.montoCuota : detectedAmount;
 
