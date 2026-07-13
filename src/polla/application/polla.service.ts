@@ -77,6 +77,34 @@ export class PollaService implements OnModuleInit {
       if (synced > 0) {
         this.logger.log(`Synced team names for ${synced} match(es) from fixture.`);
       }
+
+      // Correct known AET scores: before the provider was fixed to exclude AET,
+      // it stored the 120-minute result instead of the 90-minute score.
+      // These corrections are idempotent — they only update when the AET score is found.
+      const aetCorrections: Array<{ matchNumber: number; aetHome: number; aetAway: number; home90: number; away90: number }> = [
+        { matchNumber: 82,  aetHome: 3, aetAway: 2, home90: 2, away90: 2 }, // Bélgica 2-2 Senegal  (AET 3-2)
+        { matchNumber: 86,  aetHome: 3, aetAway: 2, home90: 1, away90: 1 }, // Argentina 1-1 Cabo Verde (AET 3-2)
+        { matchNumber: 100, aetHome: 3, aetAway: 1, home90: 1, away90: 1 }, // Argentina 1-1 Suiza    (AET 3-1)
+      ];
+      let corrected = 0;
+      for (const { matchNumber, aetHome, aetAway, home90, away90 } of aetCorrections) {
+        const dbMatch = await this.matchRepository.findByMatchNumber(matchNumber);
+        if (!dbMatch || dbMatch.status !== MatchStatus.FINISHED) continue;
+        if (dbMatch.homeScore !== aetHome || dbMatch.awayScore !== aetAway) continue;
+        dbMatch.homeScore = home90;
+        dbMatch.awayScore = away90;
+        dbMatch.recalculatePredictionPoints();
+        await this.matchRepository.update(dbMatch.id!, {
+          homeScore: dbMatch.homeScore,
+          awayScore: dbMatch.awayScore,
+          predictions: dbMatch.predictions,
+        });
+        corrected++;
+        this.logger.log(`Corrected M${matchNumber} AET score ${aetHome}-${aetAway} → 90-min ${home90}-${away90}`);
+      }
+      if (corrected > 0) {
+        this.logger.log(`Corrected AET scores for ${corrected} match(es).`);
+      }
     } catch (err) {
       this.logger.error('Failed to seed/sync World Cup fixture', err as Error);
     }

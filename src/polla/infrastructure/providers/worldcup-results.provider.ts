@@ -137,17 +137,21 @@ export class WorldCupResultsProvider {
   }
 
   /**
-   * Whether the status indicates the match is completely over (FT, AET, or penalty shootout).
-   * All three are included so the result gets persisted with the correct 90-min score and,
-   * for penalty matches, we attempt to extract the winner from provider metadata.
+   * Whether the status means we can use the reported score as the 90-minute result.
+   *
+   * AET is explicitly excluded: the reported score is the 120-minute result, not 90 min.
+   * Admin must enter the regulation-time score manually for AET matches.
+   *
+   * PEN / AP / PSO are accepted: penalties don't change the score — the pre-shootout
+   * score equals the 90-minute result and is the correct value to store.
    */
   private isFinished(status?: string | null): boolean {
     if (!status) return false;
-    const s = status.toLowerCase();
+    const s = status.toLowerCase().trim();
+    if (s === 'aet' || s.includes('extra time') || s.includes('after extra')) return false;
     return (
-      s === 'ft' || s === 'aet' || s === 'ap' || s === 'pso' ||
-      s.includes('full time') || s.includes('finished') ||
-      s.includes('extra time') || s.includes('penalt')
+      s === 'ft' || s === 'ap' || s === 'pso' ||
+      s.includes('full time') || s.includes('finished') || s.includes('penalt')
     );
   }
 
