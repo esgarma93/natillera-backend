@@ -619,14 +619,9 @@ export class PollaService implements OnModuleInit {
         );
       }
 
-      // Skip if already finished with the same score (idempotent).
-      if (
-        match.status === MatchStatus.FINISHED &&
-        match.homeScore === result.homeScore &&
-        match.awayScore === result.awayScore
-      ) {
-        continue;
-      }
+      // Never overwrite a result that has already been set — whether by a previous
+      // sync or by the admin entering the 90-minute score manually.
+      if (match.status === MatchStatus.FINISHED) continue;
 
       match.homeScore = result.homeScore;
       match.awayScore = result.awayScore;

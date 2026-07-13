@@ -39,6 +39,8 @@ export class PollaCronHandler {
    */
   @Cron('*/30 16-23 * * *', { timeZone: 'America/Bogota' })
   async consolidateDailyResults(): Promise<void> {
+    // World Cup 2026 final is July 19 — disable from July 20 onwards.
+    if (new Date() >= new Date('2026-07-20T05:00:00Z')) return;
     try {
       const fetched = await this.pollaService.syncResultsFromProvider();
       const consolidated = await this.pollaService.consolidateDailyResults(new Date());
